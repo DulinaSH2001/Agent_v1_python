@@ -61,6 +61,7 @@ async def template_selection_node(
     return {
         "selected_template": template.name,
         "template_files": template.files,
+        "file_system": template.files.copy(), # Initialize file system with template
     }
 
 

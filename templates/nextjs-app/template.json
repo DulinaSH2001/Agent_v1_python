@@ -4,7 +4,7 @@
     "language": "typescript",
     "styling": "tailwind",
     "version": "16.0",
-    "description": "Next.js 16 with TypeScript, Tailwind CSS, and Shadcn UI components",
+    "description": "Premium Next.js 15 + Tailwind CSS + Shadcn UI Template",
     "features": [
         "App Router (app/)",
         "TypeScript",
@@ -16,12 +16,12 @@
         "Utility functions (lib/utils)"
     ],
     "dependencies": {
-        "next": "^16.0.0",
+        "next": "^15.1.4",
         "react": "^19.0.0",
         "react-dom": "^19.0.0",
         "typescript": "^5.0.0",
         "tailwindcss": "^3.4.0",
-        "zod": "^3.22.0"
+        "zod": "^3.23.0"
     },
     "structure": {
         "app/": "Next.js App Router pages and layouts",

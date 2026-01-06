@@ -16,6 +16,22 @@ LangGraph's interrupt/Command pattern for pause/resume capability.
 """
 
 from __future__ import annotations
+from agent.reflexion import (
+    trigger_build_node,
+    reflexion_node,
+    escalation_node,
+    should_fix,
+    DEBUGGER_PROMPT,
+    MAX_REFLEXION_ITERATIONS,
+)
+from agent.template_nodes import template_selection_node, template_upload_node
+from agent.execution_layer import (
+    generation_node,
+    persistence_node,
+    BUILDER_PROMPT,
+    get_mcp_wrapper,
+    list_generated_files,
+)
 
 import json
 import logging
@@ -55,84 +71,301 @@ logger = logging.getLogger(__name__)
 # System Prompts
 # =============================================================================
 
-ARCHITECT_PROMPT = """You are the Architect, a senior frontend engineer specializing in Next.js 16 applications.
+ARCHITECT_PROMPT = """You are the Architect, a world-class frontend engineer and system designer specializing in Next.js 16 applications with React 19.
 
 ## Your Role
-Generate detailed, actionable implementation plans for Next.js projects based on:
-1. A backend API manifest (endpoints, schemas, authentication)
-2. User requirements for styling and functionality
+You are responsible for generating comprehensive, production-ready implementation plans that consider:
+1. Backend API manifest (endpoints, schemas, authentication patterns)
+2. User requirements for styling, functionality, and user experience
+3. Performance optimization and code splitting strategies
+4. Accessibility (WCAG 2.1 AA compliance)
+5. SEO optimization and meta tags
+6. Error handling and edge cases
+7. Security best practices (XSS, CSRF, data validation)
+8. Responsive design across all devices (mobile-first)
 
-## STRICT Next.js 16 Rules
-You MUST follow these rules without exception:
+## STRICT Next.js 16 & React 19 Compliance
 
-1. **App Router Only**: Use the `app/` directory structure. Never use `pages/`.
-   - Route: `app/dashboard/page.tsx`
-   - Layout: `app/dashboard/layout.tsx`
-   - Loading: `app/dashboard/loading.tsx`
-   - Error: `app/dashboard/error.tsx`
+### 1. App Router Architecture
+**MANDATORY**: Use `app/` directory structure exclusively. Never use `pages/`.
+   - Routes: `app/[route]/page.tsx`
+   - Layouts: `app/[route]/layout.tsx` (for shared UI)
+   - Loading States: `app/[route]/loading.tsx` (Suspense boundaries)
+   - Error Boundaries: `app/[route]/error.tsx` (error handling)
+   - Not Found: `app/[route]/not-found.tsx` (404 handling)
+   - Route Groups: `app/(group)/[route]/page.tsx` (organization)
+   - Parallel Routes: `app/@modal/(.)photo/[id]/page.tsx`
+   - Intercepting Routes: For modal overlays
 
-2. **Server Actions**: Use Server Actions in `lib/actions.ts` instead of API Routes.
-   - Define actions with `"use server"` directive
-   - Call actions directly from components
-   - Example:
-     ```typescript
-     // lib/actions.ts
-     "use server"
-     export async function createUser(formData: FormData) { ... }
-     ```
+### 2. Server Actions & Data Mutations
+**CRITICAL**: Use Server Actions for all data mutations. NO API routes.
+   ```typescript
+   // lib/actions/users.ts
+   'use server'
+   
+   import { revalidatePath, revalidateTag } from 'next/cache';
+   import { z } from 'zod';
+   
+   const CreateUserSchema = z.object({
+     email: z.string().email(),
+     name: z.string().min(2),
+   });
+   
+   export async function createUser(formData: FormData) {
+     const validated = CreateUserSchema.parse({
+       email: formData.get('email'),
+       name: formData.get('name'),
+     });
+     
+     // Business logic here
+     const user = await db.users.create({ data: validated });
+     
+     // Cache revalidation
+     revalidatePath('/users');
+     revalidateTag('users-list');
+     
+     return { success: true, data: user };
+   }
+   ```
 
-3. **Shadcn UI Components**: Use Shadcn UI component names:
-   - Button, Card, Input, Label, Dialog, Sheet
-   - Table, Tabs, Badge, Avatar, Dropdown
-   - Form (with react-hook-form + zod)
-   - Toast (via sonner)
+### 3. Data Fetching Patterns
+   - **Server Components**: Default for data fetching (async/await)
+   - **Cache Directive**: Use `'use cache'` for expensive operations
+   - **Streaming**: Implement with `<Suspense>` for progressive loading
+   - **Parallel Data Fetching**: Use `Promise.all()` for concurrent requests
+   
+### 4. Shadcn UI Component Library
+**REQUIRED**: Use Shadcn UI exclusively for UI components.
+   - **Form Components**: Button, Input, Label, Textarea, Select, Checkbox, Radio, Switch
+   - **Data Display**: Card, Table, Badge, Avatar, Separator, ScrollArea
+   - **Overlay**: Dialog, Sheet, Popover, Tooltip, DropdownMenu, AlertDialog
+   - **Feedback**: Toast (sonner), Alert, Progress, Skeleton
+   - **Form System**: Form (react-hook-form + zod), Label, FormField
+   - **Navigation**: Tabs, Breadcrumb, NavigationMenu
+   - **Layout**: Aspect Ratio, Resizable, Collapsible
 
-4. **TypeScript Strict Mode**: All files must use TypeScript with strict types.
+### 5. TypeScript Excellence
+   - **Strict Mode**: Always enabled, NO `any` types
+   - **Zod Schemas**: Define for ALL data validation
+   - **Type Inference**: Use `z.infer<typeof Schema>` for type safety
+   - **Generic Types**: Properly type all functions and components
+   - **Utility Types**: Leverage Pick, Omit, Partial, Required
 
-5. **File Naming Conventions**:
-   - Components: `components/ui/*.tsx` (Shadcn), `components/*.tsx` (custom)
-   - Actions: `lib/actions.ts` or `lib/actions/*.ts`
-   - Types: `types/*.ts` or co-located `*.types.ts`
-   - Utilities: `lib/utils.ts`
+### 6. File Organization Standards
+   ```
+   app/                        # App router
+   ├── (auth)/                 # Route group for auth pages
+   ├── (dashboard)/            # Route group for dashboard
+   ├── api/                    # ONLY for webhooks/3rd party
+   components/                 # Reusable components
+   ├── ui/                     # Shadcn components
+   └── [feature]/              # Feature-specific components
+   lib/
+   ├── actions/                # Server actions by domain
+   ├── utils.ts                # Utilities
+   └── db.ts                   # Database client
+   types/                      # Type definitions
+   hooks/                      # Custom React hooks
+   styles/                     # Global styles
+   public/                     # Static assets
+   ```
 
-## Output Format
-Return a JSON array of implementation tasks:
+### 7. Performance Optimization
+   - **Code Splitting**: Use dynamic imports for heavy components
+   - **Image Optimization**: Use Next.js `<Image>` component
+   - **Font Optimization**: Use `next/font` for font loading
+   - **Bundle Analysis**: Keep client bundles minimal
+   - **React Compiler**: Leverage automatic memoization (React 19)
+
+### 8. Security Patterns
+   - **Input Validation**: Zod schemas on ALL user inputs
+   - **CSRF Protection**: Built-in with Server Actions
+   - **XSS Prevention**: Never use `dangerouslySetInnerHTML`
+   - **SQL Injection**: Use parameterized queries
+   - **Rate Limiting**: Implement on server actions
+
+## Advanced Planning Methodology
+
+### Task Dependency Analysis
+1. **Foundation Layer** (Priority 1): Types, utilities, database schemas
+2. **Data Layer** (Priority 2): Server actions, API integrations
+3. **UI Primitives** (Priority 3): Shadcn components, shared components
+4. **Feature Components** (Priority 4): Business logic components
+5. **Pages & Layouts** (Priority 5): Route pages, layouts
+6. **Integration** (Priority 6): Error boundaries, loading states
+
+### Task Granularity
+- Each task should be **independently testable**
+- Limit to **50-150 lines** per file for maintainability
+- Create separate files for complex logic (>200 lines)
+- Extract reusable logic into custom hooks
+
+### Accessibility Checklist
+- Semantic HTML elements
+- ARIA labels where needed
+- Keyboard navigation support
+- Screen reader compatibility
+- Color contrast ratios (WCAG AA)
+- Focus visible states
+
+## Output Format (Enhanced)
+Return a JSON array with this EXACT structure:
 ```json
 [
   {
     "id": "task-1",
     "type": "create" | "modify" | "delete",
-    "file_path": "app/page.tsx",
-    "description": "Create main landing page with hero section",
-    "dependencies": [],
+    "file_path": "app/dashboard/page.tsx",
+    "description": "Create dashboard page with user stats cards, using Server Component for data fetching. Implements responsive grid layout with Shadcn Card components.",
+    "dependencies": ["task-0"],
     "priority": 1,
-    "estimated_lines": 50
+    "estimated_lines": 120,
+    "category": "page" | "component" | "action" | "type" | "utility" | "layout",
+    "requires_shadcn": ["card", "badge"],
+    "data_sources": ["users", "analytics"],
+    "accessibility_notes": "Ensure proper heading hierarchy, ARIA labels for stat cards"
   }
 ]
 ```
 
-## Important
-- Order tasks by dependency (independent tasks first)
-- Include all necessary files (components, types, actions)
-- Be specific about Shadcn components to use
-- Consider responsive design requirements
+## Quality Standards
+- **Completeness**: Include ALL files needed (no missing dependencies)
+- **Specificity**: Describe WHAT to build and WHY
+- **Best Practices**: Follow React 19 and Next.js 16 patterns
+- **Maintainability**: Organize code for long-term maintenance
+- **Performance**: Consider lazy loading, code splitting
+- **Testing**: Design components to be testable
+- **Documentation**: Clear variable names and component props
+
+## Critical Rules
+1. Order tasks by dependency graph (topological sort)
+2. Specify exact Shadcn components needed
+3. Include responsive design considerations
+4. Add error handling for all data operations
+5. Implement loading states for async operations
+6. Consider SEO metadata for public pages
+7. Plan for both light and dark mode
+8. Include form validation schemas
 """
 
 DELTA_PLANNING_INSTRUCTION = """
-## CRITICAL: UPDATE MODE ACTIVE
+## CRITICAL: DELTA UPDATE MODE ACTIVE 🔄
 
-This is an UPDATE request, not a fresh build. You must:
+This is an **INCREMENTAL UPDATE** request. The codebase already exists.
 
-1. **Analyze Existing Files**: Review the file_system to understand current implementation
-2. **Generate DELTA Plan Only**: Specify only files that need modification or addition
-3. **Preserve Existing Work**: Do NOT destroy or recreate existing files unless explicitly requested
-4. **Reference Existing Paths**: When modifying, use exact existing file paths
-5. **Merge Logic**: For modifications, describe what to ADD or CHANGE, not full replacements
+### Delta Planning Principles
 
-Mark tasks appropriately:
-- `"type": "modify"` - Update existing file
-- `"type": "create"` - New file only
-- `"type": "delete"` - Remove file (rare, only if requested)
+1. **Deep Code Analysis Required**
+   - Thoroughly review ALL existing files in file_system
+   - Understand current architecture, patterns, and conventions
+   - Identify existing components, actions, types, and utilities
+   - Map dependencies between existing files
+   - Respect established naming conventions and code style
+
+2. **Minimal Impact Strategy**
+   - Generate ONLY tasks for files that MUST change
+   - Preserve ALL existing functionality unless modification requested
+   - Avoid refactoring unless necessary for the feature
+   - Keep changes localized to affected components
+
+3. **Smart Modification Planning**
+   - **For Modify Tasks**: Describe SPECIFIC changes needed
+     - What to ADD (new functions, components, props)
+     - What to UPDATE (modify existing logic)
+     - What to REMOVE (if explicitly requested)
+   - **For Create Tasks**: Only NEW files not in existing codebase
+   - **For Delete Tasks**: ONLY if user explicitly requested removal
+
+4. **Dependency Preservation**
+   - Maintain existing import paths
+   - Don't break existing component references
+   - Ensure backward compatibility with existing code
+   - Update dependent files if you change exports
+
+5. **Pattern Consistency**
+   - Match existing code style (indentation, quotes, semicolons)
+   - Follow established patterns (e.g., if using `async/await`, continue)
+   - Reuse existing utility functions and types
+   - Extend existing validation schemas rather than create new ones
+
+6. **Merge Conflict Avoidance**
+   - Don't rename files unless absolutely necessary
+   - Don't restructure directories unless requested
+   - Add new features alongside existing ones
+   - Use composition over modification when possible
+
+### Task Type Classification
+
+**`"type": "modify"`** - Use when:
+- Adding new props to existing component
+- Adding new function to existing file
+- Updating styling of existing component
+- Fixing bugs in existing code
+- Enhancing existing features
+
+Description must specify:
+```json
+{
+  "description": "Modify UserCard component: ADD 'onDelete' prop with confirmation dialog, UPDATE card hover state to show delete button, PRESERVE all existing props and styling",
+  "modification_details": {
+    "add": ["onDelete prop", "delete button with confirmation"],
+    "update": ["hover state styling"],
+    "preserve": ["all existing props", "current layout"]
+  }
+}
+```
+
+**`"type": "create"`** - Use when:
+- File does not exist in current file_system
+- Adding completely new feature/component
+- Creating new page/route
+
+**`"type": "delete"`** - Use RARELY, only when:
+- User explicitly requested file removal
+- File is being replaced by new structure
+- Dead code cleanup explicitly requested
+
+### Context Awareness
+- Reference existing files in task descriptions
+- Note dependencies on existing components
+- Explain how new code integrates with existing code
+- Highlight any potential conflicts or considerations
+
+### Example Delta Tasks
+
+```json
+[
+  {
+    "id": "delta-1",
+    "type": "modify",
+    "file_path": "app/dashboard/page.tsx",
+    "description": "Modify dashboard page: ADD new analytics section below existing user stats, PRESERVE current layout and data fetching logic, ADD import for new AnalyticsChart component",
+    "dependencies": ["delta-2"],
+    "priority": 2,
+    "estimated_lines": 25,
+    "modification_scope": "Add 20 lines for analytics section, preserve existing 100 lines"
+  },
+  {
+    "id": "delta-2",
+    "type": "create",
+    "file_path": "components/AnalyticsChart.tsx",
+    "description": "Create new AnalyticsChart component using existing Chart.js integration pattern from components/StatsChart.tsx, reuse existing chart utilities from lib/chart-utils.ts",
+    "dependencies": [],
+    "priority": 1,
+    "estimated_lines": 80,
+    "reuses": ["lib/chart-utils.ts", "styles from components/StatsChart.tsx"]
+  }
+]
+```
+
+### Quality Checks for Delta Mode
+✅ Did you analyze existing file_system?
+✅ Are changes minimal and focused?
+✅ Did you preserve existing functionality?
+✅ Are modification details specific?
+✅ Did you check for dependency impacts?
+✅ Does new code follow existing patterns?
+✅ Are file paths exact matches from file_system?
 """
 
 
@@ -146,14 +379,14 @@ def get_planning_llm(
 ) -> ChatOpenAI:
     """
     Get a configured LLM instance for planning.
-    
+
     Supports both Azure OpenAI and standard OpenAI based on environment variables.
     Checks for Azure config first, then falls back to standard OpenAI.
-    
+
     Args:
         temperature: Sampling temperature. Low for deterministic planning.
         streaming: Whether to enable streaming. Required for token callbacks.
-    
+
     Returns:
         Configured ChatOpenAI or AzureChatOpenAI instance.
     """
@@ -162,11 +395,11 @@ def get_planning_llm(
     azure_key = os.getenv("AZURE_OPENAI_API_KEY")
     azure_deployment = os.getenv("AZURE_OPENAI_DEPLOYMENT_NAME", "gpt-4o")
     azure_version = os.getenv("AZURE_OPENAI_API_VERSION", "2025-01-01-preview")
-    
+
     if azure_endpoint and azure_key:
         try:
             from langchain_openai import AzureChatOpenAI
-            
+
             logger.info(f"Using Azure OpenAI: {azure_deployment}")
             return AzureChatOpenAI(
                 azure_endpoint=azure_endpoint,
@@ -177,8 +410,9 @@ def get_planning_llm(
                 streaming=streaming,
             )
         except ImportError:
-            logger.warning("AzureChatOpenAI not available, falling back to OpenAI")
-    
+            logger.warning(
+                "AzureChatOpenAI not available, falling back to OpenAI")
+
     # Fall back to standard OpenAI
     api_key = os.getenv("OPENAI_API_KEY")
     if not api_key:
@@ -186,7 +420,7 @@ def get_planning_llm(
             "Neither Azure OpenAI nor OpenAI API key is configured. "
             "Set AZURE_OPENAI_ENDPOINT + AZURE_OPENAI_API_KEY or OPENAI_API_KEY."
         )
-    
+
     logger.info("Using standard OpenAI API")
     return ChatOpenAI(
         model="gpt-4o",
@@ -206,35 +440,35 @@ async def plan_node(
 ) -> Dict[str, Any]:
     """
     The Architect node - generates implementation plans using GPT-4o.
-    
+
     This node analyzes the manifest and user prompt to create a detailed
     implementation plan. When file_system is not empty, it switches to
     DELTA mode to preserve existing work (Antigravity pattern).
-    
+
     Args:
         state: Current agent state containing manifest, user_prompt, file_system.
         config: Runnable configuration with thread_id and callbacks.
-    
+
     Returns:
         State update with implementation_plan.
     """
     logger.info("plan_node: Starting plan generation")
-    
+
     # Get the LLM
     llm = get_planning_llm()
-    
+
     # Build the system prompt
     system_prompt = ARCHITECT_PROMPT
-    
+
     # Check if this is an update request (Antigravity pattern)
     if state.get("file_system"):
         logger.info("plan_node: DELTA mode - existing files detected")
         system_prompt += DELTA_PLANNING_INSTRUCTION
-    
+
     # Build the user message with context
     manifest_str = json.dumps(state.get("manifest", {}), indent=2)
     file_system = state.get("file_system", {})
-    
+
     user_content = f"""## Backend API Manifest
 ```json
 {manifest_str}
@@ -243,7 +477,7 @@ async def plan_node(
 ## User Requirements
 {state.get("user_prompt", "No specific requirements provided.")}
 """
-    
+
     # Add existing files context if in delta mode
     if file_system:
         existing_files = "\n".join(f"- {path}" for path in file_system.keys())
@@ -254,41 +488,41 @@ async def plan_node(
     else:
         # No existing files - include template info so planner knows what's available
         user_content += get_template_context_for_planner()
-    
+
     user_content += """
 ## Task
 Generate the implementation plan as a JSON array. Return ONLY the JSON array, no markdown formatting.
 """
-    
+
     # Prepare messages
     messages = [
         SystemMessage(content=system_prompt),
         HumanMessage(content=user_content),
     ]
-    
+
     # Invoke the LLM
     try:
         response = await llm.ainvoke(messages, config=config)
-        
+
         # Parse the JSON response
         content = response.content.strip()
-        
+
         # Handle potential markdown code blocks
         if content.startswith("```"):
             content = content.split("```")[1]
             if content.startswith("json"):
                 content = content[4:]
             content = content.strip()
-        
+
         implementation_plan = json.loads(content)
-        
+
         logger.info(f"plan_node: Generated {len(implementation_plan)} tasks")
-        
+
         return {
             "implementation_plan": implementation_plan,
             "iteration_count": state.get("iteration_count", 0) + 1,
         }
-        
+
     except json.JSONDecodeError as e:
         logger.error(f"plan_node: Failed to parse LLM response as JSON: {e}")
         # Return a fallback plan indicating the error
@@ -318,27 +552,27 @@ async def approval_node(
 ) -> Dict[str, Any]:
     """
     The Gatekeeper node - pauses execution for human approval.
-    
+
     This node publishes the generated plan to an Ably channel for UI rendering,
     then calls interrupt() to pause execution. When resumed via Command,
     it processes the human's decision.
-    
+
     Resume payloads:
         - {"action": "APPROVE"} -> Sets approved=True, continues to scaffold
         - {"action": "EDIT", "feedback": "..."} -> Updates user_prompt, loops back
-    
+
     Args:
         state: Current agent state with implementation_plan.
         config: Runnable configuration with thread_id.
-    
+
     Returns:
         State update with approved status and potentially updated user_prompt.
     """
     logger.info("approval_node: Awaiting human approval")
-    
+
     # Extract thread_id from config for Ably channel
     thread_id = config.get("configurable", {}).get("thread_id", "unknown")
-    
+
     # Prepare the plan summary for the interrupt payload
     plan = state.get("implementation_plan", [])
     plan_summary = {
@@ -348,39 +582,42 @@ async def approval_node(
         "iteration": state.get("iteration_count", 0),
         "awaiting_action": ["APPROVE", "EDIT"],
     }
-    
+
     # Note: In a real implementation, you would publish to Ably here
     # For now, the interrupt payload contains the plan for the caller
-    logger.info(f"approval_node: Publishing plan with {len(plan)} tasks to channel")
-    
+    logger.info(
+        f"approval_node: Publishing plan with {len(plan)} tasks to channel")
+
     # Interrupt execution and wait for human input
     # The payload becomes available to the caller and will be returned
     # when they query the graph state
     human_response = interrupt(plan_summary)
-    
+
     # Process the human's response (after resume via Command)
     action = human_response.get("action", "").upper()
-    
+
     if action == "APPROVE":
         logger.info("approval_node: Plan APPROVED by human")
         return {"approved": True}
-    
+
     elif action == "EDIT":
         feedback = human_response.get("feedback", "")
-        logger.info(f"approval_node: Plan EDIT requested with feedback: {feedback[:100]}...")
-        
+        logger.info(
+            f"approval_node: Plan EDIT requested with feedback: {feedback[:100]}...")
+
         # Append feedback to user_prompt for next iteration
         original_prompt = state.get("user_prompt", "")
         updated_prompt = f"{original_prompt}\n\n[REVISION FEEDBACK]: {feedback}"
-        
+
         return {
             "approved": False,
             "user_prompt": updated_prompt,
         }
-    
+
     else:
         # Unknown action, treat as rejection
-        logger.warning(f"approval_node: Unknown action '{action}', treating as rejection")
+        logger.warning(
+            f"approval_node: Unknown action '{action}', treating as rejection")
         return {"approved": False}
 
 
@@ -389,26 +626,10 @@ async def approval_node(
 # =============================================================================
 
 # Import execution nodes from execution_layer module
-from agent.execution_layer import (
-    generation_node,
-    persistence_node,
-    BUILDER_PROMPT,
-    get_mcp_wrapper,
-    list_generated_files,
-)
 
 # Import template nodes
-from agent.template_nodes import template_selection_node, template_upload_node
 
 # Import reflexion nodes from reflexion module
-from agent.reflexion import (
-    trigger_build_node,
-    reflexion_node,
-    escalation_node,
-    should_fix,
-    DEBUGGER_PROMPT,
-    MAX_REFLEXION_ITERATIONS,
-)
 
 
 # =============================================================================
@@ -418,14 +639,14 @@ from agent.reflexion import (
 def check_approval(state: AgentState) -> Literal["template_upload", "planner"]:
     """
     Conditional edge that routes based on approval status.
-    
+
     This implements the Antigravity loop with two-phase generation:
     - If approved: proceed to template upload (Phase 1)
     - If not approved: loop back to planning with updated feedback
-    
+
     Args:
         state: Current agent state with approved flag.
-    
+
     Returns:
         Next node name: "template_upload" or "planner"
     """
@@ -433,7 +654,8 @@ def check_approval(state: AgentState) -> Literal["template_upload", "planner"]:
         logger.info("check_approval: Approved -> template_upload (Phase 1)")
         return "template_upload"
     else:
-        logger.info("check_approval: Not approved -> planner (Antigravity loop)")
+        logger.info(
+            "check_approval: Not approved -> planner (Antigravity loop)")
         return "planner"
 
 
@@ -448,7 +670,7 @@ def create_antigravity_graph(
 ) -> Any:
     """
     Create and compile the Antigravity agent graph.
-    
+
     The graph implements the following flow:
     1. planner (plan_node) - Generate implementation plan
     2. approval (approval_node) - HITL interrupt for approval (skipped if skip_approval=True)
@@ -459,17 +681,17 @@ def create_antigravity_graph(
     7. Conditional: build_status? -> end/reflexion/escalate
     8. reflexion (reflexion_node) - Analyze errors and generate fixes
     9. escalation (escalation_node) - Request human help if max retries
-    
+
     Args:
         checkpointer: Optional checkpointer (e.g., AsyncRedisSaver) for persistence.
             Required for interrupt/resume to work across sessions.
         enable_reflexion: Whether to include the reflexion loop. Defaults to True.
         skip_approval: Whether to skip the HITL approval step. Defaults to False.
             Set to True when running without checkpointer.
-    
+
     Returns:
         Compiled graph ready for execution.
-    
+
     Example:
         >>> from agent.state_engine import create_redis_saver
         >>> checkpointer = create_redis_saver()
@@ -481,20 +703,23 @@ def create_antigravity_graph(
     """
     # Create the graph with AgentState schema
     builder = StateGraph(AgentState)
-    
+
     # Add core nodes
     builder.add_node("template_selection", template_selection_node)
     builder.add_node("planner", plan_node)
     builder.add_node("generator", generation_node)
-    builder.add_node("template_upload", template_upload_node)  # Phase 1: Upload template
-    builder.add_node("persistence", persistence_node)  # Phase 2: Upload custom files
-    
+    # Phase 1: Upload template
+    builder.add_node("template_upload", template_upload_node)
+    # Phase 2: Upload custom files
+    builder.add_node("persistence", persistence_node)
+
     if skip_approval:
         # Simple flow: template_selection -> planner -> generator (no HITL)
         logger.info("Building graph with skip_approval=True (no HITL)")
         builder.set_entry_point("template_selection")
         builder.add_edge("template_selection", "planner")
-        builder.add_edge("planner", "template_upload")  # Upload template before generation
+        # Upload template before generation
+        builder.add_edge("planner", "template_upload")
         builder.add_edge("template_upload", "generator")
     else:
         # Full HITL flow with approval node
@@ -502,32 +727,32 @@ def create_antigravity_graph(
         builder.set_entry_point("template_selection")
         builder.add_edge("template_selection", "planner")
         builder.add_edge("planner", "approval")
-        
+
         # Conditional edge from approval
         builder.add_conditional_edges(
             "approval",
             check_approval,
             {
-                 "template_upload": "template_upload",  # Phase 1: Upload template after approval
+                "template_upload": "template_upload",  # Phase 1: Upload template after approval
                 "planner": "planner",
             }
         )
-        
+
         # Chain: template_upload -> generator (Phase 2)
         builder.add_edge("template_upload", "generator")
-    
+
     # Chain: generator -> persistence
     builder.add_edge("generator", "persistence")
-    
+
     if enable_reflexion:
         # Add reflexion nodes
         builder.add_node("trigger_build", trigger_build_node)
         builder.add_node("reflexion", reflexion_node)
         builder.add_node("escalation", escalation_node)
-        
+
         # Chain: persistence -> trigger_build
         builder.add_edge("persistence", "trigger_build")
-        
+
         # Conditional edge from trigger_build based on build status
         builder.add_conditional_edges(
             "trigger_build",
@@ -538,16 +763,16 @@ def create_antigravity_graph(
                 "escalate": "escalation",
             }
         )
-        
+
         # Reflexion loops back to generator
         builder.add_edge("reflexion", "generator")
-        
+
         # Escalation can loop back to planner (after human input)
         builder.add_edge("escalation", "planner")
     else:
         # Simple flow: persistence -> END
         builder.add_edge("persistence", END)
-    
+
     # Compile with checkpointer if provided
     if checkpointer:
         logger.info("Compiling graph with checkpointer for persistence")
@@ -570,21 +795,21 @@ async def run_antigravity_agent(
 ) -> Dict[str, Any]:
     """
     Convenience function to run the Antigravity agent.
-    
+
     This sets up the graph with Redis persistence and runs it with the
     provided inputs. The graph will pause at the approval node and
     return the interrupt data.
-    
+
     Args:
         manifest: Backend API manifest.
         user_prompt: User's frontend requirements.
         thread_id: Unique thread identifier for persistence.
         file_system: Optional existing files (triggers delta mode).
         redis_url: Optional Redis URL (defaults to REDIS_URL env var).
-    
+
     Returns:
         Graph execution result or interrupt state.
-    
+
     Example:
         >>> result = await run_antigravity_agent(
         ...     manifest={"endpoints": ["/api/users"]},
@@ -594,15 +819,15 @@ async def run_antigravity_agent(
     """
     # Create checkpointer
     checkpointer = create_redis_saver(redis_url)
-    
+
     # Create graph
     graph = create_antigravity_graph(checkpointer=checkpointer)
-    
+
     # Load template files if no existing file_system provided
     if not file_system:
         logger.info("Loading template files as base")
         file_system = load_template("nextjs-app")
-    
+
     # Prepare initial state
     initial_state: AgentState = {
         "manifest": manifest,
@@ -616,14 +841,14 @@ async def run_antigravity_agent(
         "build_ready": False,
         "build_status": "pending",
     }
-    
+
     # Get config
     config = get_graph_config(thread_id)
-    
+
     # Run the graph
     logger.info(f"Starting Antigravity agent for thread: {thread_id}")
     result = await graph.ainvoke(initial_state, config=config)
-    
+
     return result
 
 
@@ -635,19 +860,19 @@ async def resume_antigravity_agent(
 ) -> Dict[str, Any]:
     """
     Resume the Antigravity agent after human review.
-    
+
     This function resumes a paused graph execution with the human's
     decision (approve or edit with feedback).
-    
+
     Args:
         thread_id: Thread identifier of the paused execution.
         action: Human action - "APPROVE" or "EDIT".
         feedback: Required feedback text if action is "EDIT".
         redis_url: Optional Redis URL (defaults to REDIS_URL env var).
-    
+
     Returns:
         Graph execution result after resume.
-    
+
     Example:
         >>> # Approve the plan
         >>> result = await resume_antigravity_agent(
@@ -664,25 +889,26 @@ async def resume_antigravity_agent(
     """
     # Create checkpointer
     checkpointer = create_redis_saver(redis_url)
-    
+
     # Create graph
     graph = create_antigravity_graph(checkpointer=checkpointer)
-    
+
     # Get config
     config = get_graph_config(thread_id)
-    
+
     # Build resume payload
     resume_payload: Dict[str, Any] = {"action": action}
     if action == "EDIT" and feedback:
         resume_payload["feedback"] = feedback
-    
+
     # Resume with Command
-    logger.info(f"Resuming Antigravity agent for thread: {thread_id} with action: {action}")
+    logger.info(
+        f"Resuming Antigravity agent for thread: {thread_id} with action: {action}")
     result = await graph.ainvoke(
         Command(resume=resume_payload),
         config=config,
     )
-    
+
     return result
 
 
@@ -696,26 +922,26 @@ async def get_agent_state(
 ) -> Optional[Dict[str, Any]]:
     """
     Get the current state of an Antigravity agent execution.
-    
+
     This is useful for checking if the agent is paused at an interrupt
     and retrieving the plan for UI display.
-    
+
     Args:
         thread_id: Thread identifier to inspect.
         redis_url: Optional Redis URL (defaults to REDIS_URL env var).
-    
+
     Returns:
         Current agent state or None if not found.
     """
     # Create checkpointer
     checkpointer = create_redis_saver(redis_url)
-    
+
     # Create graph
     graph = create_antigravity_graph(checkpointer=checkpointer)
-    
+
     # Get config
     config = get_graph_config(thread_id)
-    
+
     # Get state
     try:
         state = await graph.aget_state(config)
