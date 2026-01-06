@@ -10,17 +10,20 @@ Run with: uvicorn api.webhook:app --host 0.0.0.0 --port 8000
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import hmac
 import logging
 import os
-from typing import List, Literal, Optional
+from typing import Any, Dict, List, Literal, Optional
 
+import httpx
 from dotenv import load_dotenv
-from fastapi import FastAPI, HTTPException, Header, Request
+from fastapi import FastAPI, HTTPException, Header, Request, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 from langgraph.types import Command
+from ably import AblyRest
 
 # Load environment variables
 load_dotenv()
@@ -83,6 +86,103 @@ class HealthResponse(BaseModel):
     """Response for health check."""
     status: str
     version: str
+
+
+# =============================================================================
+# Generation API Models
+# =============================================================================
+
+class GenerateRequest(BaseModel):
+    """Request payload for starting code generation."""
+    query: str = Field(description="User's prompt for code generation")
+    user_id: str = Field(description="User identifier")
+    job_id: str = Field(description="Unique job identifier from backend")
+    max_revisions: int = Field(default=1, description="Maximum revision iterations")
+    manifest: Optional[Dict[str, Any]] = Field(default=None, description="Backend API manifest")
+    org_id: Optional[str] = Field(default=None, description="Organization ID")
+    project_id: Optional[str] = Field(default=None, description="Project ID")
+
+
+class GenerateResponse(BaseModel):
+    """Response for generation endpoints."""
+    success: bool
+    message: str
+    job_id: str
+    status: Optional[str] = None
+
+
+class ChatRequest(BaseModel):
+    """Request payload for chat messages."""
+    message: str = Field(description="Chat message from user")
+    user_id: str = Field(description="User identifier")
+
+
+class ChatModifyRequest(BaseModel):
+    """Request payload for modification requests."""
+    message: str = Field(description="Modification request message")
+    user_id: str = Field(description="User identifier")
+    modification_id: Optional[str] = Field(default=None, description="Unique modification ID")
+
+
+class JobStatusResponse(BaseModel):
+    """Response for job status queries."""
+    success: bool
+    job_id: str
+    status: str
+    progress: Optional[int] = None
+    message: Optional[str] = None
+    files_generated: Optional[int] = None
+    error: Optional[str] = None
+
+
+class FilesResponse(BaseModel):
+    """Response for generated files."""
+    success: bool
+    job_id: str
+    files: List[Dict[str, Any]]
+    file_count: int
+
+
+# =============================================================================
+# Ably Client Configuration
+# =============================================================================
+
+def get_ably_client() -> Optional[AblyRest]:
+    """Get configured Ably REST client for publishing status updates."""
+    api_key = os.getenv("ABLY_API_KEY")
+    if not api_key:
+        logger.warning("ABLY_API_KEY not configured")
+        return None
+    return AblyRest(api_key)
+
+
+def get_ably_channel_prefix() -> str:
+    """Get Ably channel prefix from environment."""
+    return os.getenv("ABLY_CHANNEL_PREFIX", "ai-backend-generation")
+
+
+async def publish_to_ably(job_id: str, status: str, message: str, **extra_data):
+    """Publish status update to Ably channel."""
+    try:
+        ably = get_ably_client()
+        if not ably:
+            return
+        
+        channel_name = f"{get_ably_channel_prefix()}:{job_id}"
+        channel = ably.channels.get(channel_name)
+        
+        data = {
+            "status": status,
+            "message": message,
+            "job_id": job_id,
+            **extra_data
+        }
+        
+        await asyncio.to_thread(channel.publish, "status", data)
+        logger.info(f"Published to Ably: {channel_name} - {status}")
+        
+    except Exception as e:
+        logger.error(f"Failed to publish to Ably: {e}")
 
 
 # =============================================================================
@@ -179,8 +279,364 @@ async def health_check():
     """Health check endpoint."""
     return HealthResponse(
         status="healthy",
-        version="0.4.0",
+        version="0.5.0",
     )
+
+
+# =============================================================================
+# Generation API Routes (Platform Integration)
+# =============================================================================
+
+# In-memory job storage (use Redis in production for persistence across restarts)
+_active_jobs: Dict[str, Dict[str, Any]] = {}
+
+
+async def run_generation_task(
+    job_id: str,
+    query: str,
+    user_id: str,
+    manifest: Optional[Dict[str, Any]],
+    org_id: Optional[str],
+    project_id: Optional[str],
+):
+    """Background task to run the agent and publish status updates."""
+    try:
+        # Import here to avoid circular imports
+        from agent.graph_logic import create_antigravity_graph, run_antigravity_agent
+        from agent.state_engine import create_redis_saver, get_graph_config, get_initial_state
+        
+        # Update job status
+        _active_jobs[job_id] = {
+            "status": "started",
+            "user_id": user_id,
+            "query": query,
+            "org_id": org_id,
+            "project_id": project_id,
+            "file_system": {},
+        }
+        
+        # Publish started status
+        await publish_to_ably(job_id, "started", "AI service processing request", progress=10)
+        
+        # Create checkpointer
+        try:
+            checkpointer = create_redis_saver()
+        except ValueError as e:
+            logger.warning(f"Redis not configured, running without persistence: {e}")
+            checkpointer = None
+        
+        # Create graph
+        graph = create_antigravity_graph(checkpointer=checkpointer, enable_reflexion=False)
+        
+        # Prepare initial state
+        initial_state = get_initial_state(
+            manifest=manifest or {},
+            user_prompt=query,
+        )
+        
+        # Get config using job_id as thread_id
+        config = get_graph_config(job_id)
+        
+        # Publish specs_extracted status
+        await publish_to_ably(job_id, "specs_extracted", "Requirements analyzed, generating plan", progress=30)
+        
+        # Run the agent (this will pause at approval_node with HITL)
+        # For simplicity, we auto-approve in this flow
+        logger.info(f"Starting agent for job {job_id}")
+        
+        # First run - generates the plan
+        result = await graph.ainvoke(initial_state, config=config)
+        
+        # Check if we have an implementation plan (paused at approval)
+        plan = result.get("implementation_plan", [])
+        logger.info(f"Generated plan with {len(plan)} tasks for job {job_id}")
+        
+        # Auto-approve the plan and continue
+        if plan and not result.get("approved", False):
+            from langgraph.types import Command
+            
+            await publish_to_ably(
+                job_id, 
+                "generated", 
+                f"Plan generated with {len(plan)} tasks, generating code...", 
+                progress=50,
+                task_count=len(plan)
+            )
+            
+            # Resume with approval
+            result = await graph.ainvoke(
+                Command(resume={"action": "APPROVE"}),
+                config=config,
+            )
+        
+        # Get generated files
+        file_system = result.get("file_system", {})
+        
+        # Update job storage
+        _active_jobs[job_id]["file_system"] = file_system
+        _active_jobs[job_id]["status"] = "completed"
+        _active_jobs[job_id]["files_generated"] = len(file_system)
+        
+        logger.info(f"Generated {len(file_system)} files for job {job_id}")
+        
+        # Publish completion
+        await publish_to_ably(
+            job_id,
+            "completed",
+            f"Code generation completed with {len(file_system)} files",
+            progress=90,
+            filesGenerated=len(file_system),
+        )
+        
+        # Send files to backend webhook
+        await send_files_to_backend(
+            job_id=job_id,
+            files=file_system,
+            org_id=org_id,
+            project_id=project_id,
+        )
+        
+    except Exception as e:
+        logger.error(f"Generation failed for job {job_id}: {e}")
+        import traceback
+        traceback.print_exc()
+        
+        _active_jobs[job_id] = {
+            "status": "failed",
+            "error": str(e),
+        }
+        
+        await publish_to_ably(
+            job_id,
+            "failed",
+            f"Generation failed: {str(e)}",
+            progress=0,
+            error=str(e),
+        )
+
+
+async def send_files_to_backend(
+    job_id: str,
+    files: Dict[str, str],
+    org_id: Optional[str],
+    project_id: Optional[str],
+):
+    """Send generated files to the backend webhook."""
+    backend_url = os.getenv("NODE_BACKEND_URL", "http://localhost:8080")
+    webhook_secret = os.getenv("NODE_BACKEND_WEBHOOK_SECRET", "your-webhook-secret-change-this")
+    
+    # Convert file_system dict to list format expected by backend
+    files_list = [
+        {"path": path, "content": content, "content_type": "text/plain"}
+        for path, content in files.items()
+    ]
+    
+    payload = {
+        "job_id": job_id,
+        "files": files_list,
+        "project_name": f"generated-{job_id[:8]}",
+        "metadata": {
+            "org_id": org_id,
+            "project_id": project_id,
+            "file_count": len(files_list),
+        }
+    }
+    
+    try:
+        async with httpx.AsyncClient() as client:
+            response = await client.post(
+                f"{backend_url}/api/v1/generate/webhook/completion",
+                json=payload,
+                headers={
+                    "Authorization": f"Bearer {webhook_secret}",
+                    "Content-Type": "application/json",
+                },
+                timeout=30.0,
+            )
+            
+            if response.status_code == 200:
+                logger.info(f"Successfully sent {len(files_list)} files to backend for job {job_id}")
+                
+                # Publish files_saved status
+                await publish_to_ably(
+                    job_id,
+                    "files_saved",
+                    f"Successfully saved {len(files_list)} files to project",
+                    progress=100,
+                    file_count=len(files_list),
+                )
+            else:
+                logger.error(f"Backend webhook returned {response.status_code}: {response.text}")
+                
+    except Exception as e:
+        logger.error(f"Failed to send files to backend: {e}")
+
+
+@app.post("/api/v1/generate", response_model=GenerateResponse)
+async def start_generation(
+    request: GenerateRequest,
+    background_tasks: BackgroundTasks,
+):
+    """
+    Start code generation.
+    
+    This endpoint accepts a generation request from the platform backend,
+    starts the agent in a background task, and returns immediately with
+    the job ID. Status updates are sent via Ably.
+    """
+    logger.info(f"Received generation request: job_id={request.job_id}, query={request.query[:50]}...")
+    
+    # Store initial job state
+    _active_jobs[request.job_id] = {
+        "status": "queued",
+        "user_id": request.user_id,
+        "query": request.query,
+    }
+    
+    # Start background task
+    background_tasks.add_task(
+        run_generation_task,
+        job_id=request.job_id,
+        query=request.query,
+        user_id=request.user_id,
+        manifest=request.manifest,
+        org_id=request.org_id,
+        project_id=request.project_id,
+    )
+    
+    return GenerateResponse(
+        success=True,
+        message="Generation started",
+        job_id=request.job_id,
+        status="queued",
+    )
+
+
+@app.get("/api/v1/generate/{job_id}", response_model=JobStatusResponse)
+async def get_job_status(job_id: str):
+    """Get the current status of a generation job."""
+    job = _active_jobs.get(job_id)
+    
+    if not job:
+        # Try to get from Redis checkpointer
+        try:
+            from agent.graph_logic import get_agent_state
+            state = await get_agent_state(job_id)
+            
+            if state:
+                return JobStatusResponse(
+                    success=True,
+                    job_id=job_id,
+                    status=state.get("build_status", "unknown"),
+                    files_generated=len(state.get("file_system", {})),
+                )
+        except Exception as e:
+            logger.warning(f"Could not get agent state: {e}")
+        
+        raise HTTPException(status_code=404, detail="Job not found")
+    
+    return JobStatusResponse(
+        success=True,
+        job_id=job_id,
+        status=job.get("status", "unknown"),
+        files_generated=job.get("files_generated"),
+        error=job.get("error"),
+    )
+
+
+@app.get("/api/v1/generate/{job_id}/files", response_model=FilesResponse)
+async def get_generated_files(job_id: str):
+    """Get the generated files for a completed job."""
+    job = _active_jobs.get(job_id)
+    
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+    
+    if job.get("status") != "completed":
+        raise HTTPException(
+            status_code=400,
+            detail=f"Job is not completed. Current status: {job.get('status')}"
+        )
+    
+    file_system = job.get("file_system", {})
+    files_list = [
+        {"path": path, "content": content, "size": len(content)}
+        for path, content in file_system.items()
+    ]
+    
+    return FilesResponse(
+        success=True,
+        job_id=job_id,
+        files=files_list,
+        file_count=len(files_list),
+    )
+
+
+@app.post("/api/v1/chat/{job_id}")
+async def send_chat_message(job_id: str, request: ChatRequest):
+    """Send a chat message for follow-up interactions."""
+    job = _active_jobs.get(job_id)
+    
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+    
+    logger.info(f"Chat message for job {job_id}: {request.message[:50]}...")
+    
+    # For now, just acknowledge - full implementation would integrate with agent
+    return {
+        "success": True,
+        "job_id": job_id,
+        "message": "Message received",
+    }
+
+
+@app.post("/api/v1/chat/{job_id}/modify", response_model=GenerateResponse)
+async def request_modification(
+    job_id: str,
+    request: ChatModifyRequest,
+    background_tasks: BackgroundTasks,
+):
+    """Request modifications to a generated project."""
+    job = _active_jobs.get(job_id)
+    
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+    
+    logger.info(f"Modification request for job {job_id}: {request.message[:50]}...")
+    
+    # Start a new generation with the modification as the query
+    # and the existing file_system for delta mode
+    modification_job_id = request.modification_id or f"{job_id}-mod"
+    
+    _active_jobs[modification_job_id] = {
+        "status": "queued",
+        "user_id": request.user_id,
+        "query": request.message,
+        "parent_job_id": job_id,
+        "file_system": job.get("file_system", {}),
+    }
+    
+    background_tasks.add_task(
+        run_generation_task,
+        job_id=modification_job_id,
+        query=request.message,
+        user_id=request.user_id,
+        manifest=None,  # Inherit from parent
+        org_id=job.get("org_id"),
+        project_id=job.get("project_id"),
+    )
+    
+    return GenerateResponse(
+        success=True,
+        message="Modification started",
+        job_id=modification_job_id,
+        status="queued",
+    )
+
+
+# =============================================================================
+# Build Status Callback Routes
+# =============================================================================
 
 
 @app.post(

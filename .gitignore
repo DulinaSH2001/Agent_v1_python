@@ -7,6 +7,11 @@ bin/
 obj/
 target/
 
+# Generated project
+generated_project/
+
+
+
 # Dependency directories
 node_modules/
 vendor/
