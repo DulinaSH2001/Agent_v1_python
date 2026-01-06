@@ -1,0 +1,31 @@
+# Antigravity Agent - Core Dependencies
+# Python 3.11+ required
+
+# LangGraph & LangChain
+langgraph>=0.2.0
+langchain-core>=0.3.0
+langchain-openai>=0.2.0
+langchain-mcp-adapters>=0.1.0
+langgraph-checkpoint-redis>=0.1.0
+
+# Real-time Communication
+ably>=2.0.0
+
+# Database & Caching (Upstash Redis REST API)
+upstash-redis>=1.0.0
+redis>=5.0.0
+
+# Cloud Storage
+azure-storage-blob>=12.0.0
+aiofiles>=24.0.0
+
+# Web Framework (API Server)
+fastapi>=0.110.0
+uvicorn>=0.27.0
+httpx>=0.27.0
+
+# Data Validation
+pydantic>=2.0.0
+
+# Environment Configuration
+python-dotenv>=1.0.0
