@@ -77,6 +77,14 @@ from agent.reflexion import (
     format_error_summary,
 )
 
+# Template Loader
+from agent.template_loader import (
+    load_template,
+    merge_with_template,
+    get_template_context_for_planner,
+    list_template_files,
+)
+
 __all__ = [
     # Phase 1: State Engine
     "AgentState",

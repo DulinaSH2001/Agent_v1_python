@@ -36,6 +36,14 @@ from agent.state_engine import (
     get_graph_config,
 )
 
+# Import template loader
+from agent.template_loader import (
+    load_template,
+    merge_with_template,
+    get_template_context_for_planner,
+    TEMPLATE_INFO,
+)
+
 # Load environment variables
 load_dotenv()
 
@@ -243,6 +251,9 @@ async def plan_node(
 ## Existing Files (DO NOT recreate unless modifying)
 {existing_files}
 """
+    else:
+        # No existing files - include template info so planner knows what's available
+        user_content += get_template_context_for_planner()
     
     user_content += """
 ## Task
@@ -430,13 +441,14 @@ def check_approval(state: AgentState) -> Literal["generator", "planner"]:
 def create_antigravity_graph(
     checkpointer: Optional[Any] = None,
     enable_reflexion: bool = True,
+    skip_approval: bool = False,
 ) -> Any:
     """
     Create and compile the Antigravity agent graph.
     
     The graph implements the following flow:
     1. planner (plan_node) - Generate implementation plan
-    2. approval (approval_node) - HITL interrupt for approval
+    2. approval (approval_node) - HITL interrupt for approval (skipped if skip_approval=True)
     3. Conditional: approved? -> generator : loop to planner
     4. generator (generation_node) - Generate code with MCP tools
     5. persistence (persistence_node) - Upload to Azure Blob Storage
@@ -449,6 +461,8 @@ def create_antigravity_graph(
         checkpointer: Optional checkpointer (e.g., AsyncRedisSaver) for persistence.
             Required for interrupt/resume to work across sessions.
         enable_reflexion: Whether to include the reflexion loop. Defaults to True.
+        skip_approval: Whether to skip the HITL approval step. Defaults to False.
+            Set to True when running without checkpointer.
     
     Returns:
         Compiled graph ready for execution.
@@ -467,25 +481,29 @@ def create_antigravity_graph(
     
     # Add core nodes
     builder.add_node("planner", plan_node)
-    builder.add_node("approval", approval_node)
     builder.add_node("generator", generation_node)
     builder.add_node("persistence", persistence_node)
     
-    # Set entry point
-    builder.set_entry_point("planner")
-    
-    # Add edges for planning and approval
-    builder.add_edge("planner", "approval")
-    
-    # Conditional edge from approval
-    builder.add_conditional_edges(
-        "approval",
-        check_approval,
-        {
-            "generator": "generator",
-            "planner": "planner",
-        }
-    )
+    if skip_approval:
+        # Simple flow: planner -> generator (no HITL)
+        logger.info("Building graph with skip_approval=True (no HITL)")
+        builder.set_entry_point("planner")
+        builder.add_edge("planner", "generator")
+    else:
+        # Full HITL flow with approval node
+        builder.add_node("approval", approval_node)
+        builder.set_entry_point("planner")
+        builder.add_edge("planner", "approval")
+        
+        # Conditional edge from approval
+        builder.add_conditional_edges(
+            "approval",
+            check_approval,
+            {
+                "generator": "generator",
+                "planner": "planner",
+            }
+        )
     
     # Chain: generator -> persistence
     builder.add_edge("generator", "persistence")
@@ -569,11 +587,16 @@ async def run_antigravity_agent(
     # Create graph
     graph = create_antigravity_graph(checkpointer=checkpointer)
     
+    # Load template files if no existing file_system provided
+    if not file_system:
+        logger.info("Loading template files as base")
+        file_system = load_template("nextjs-app")
+    
     # Prepare initial state
     initial_state: AgentState = {
         "manifest": manifest,
         "user_prompt": user_prompt,
-        "file_system": file_system or {},
+        "file_system": file_system,
         "implementation_plan": [],
         "build_logs": [],
         "iteration_count": 0,

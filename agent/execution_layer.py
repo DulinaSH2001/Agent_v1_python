@@ -480,41 +480,90 @@ class MCPWrapper:
     """
     
     def __init__(self):
-        """Initialize the MCP wrapper with available tools."""
+        """Initialize the MCP wrapper state."""
         self.mcp_available = False
         self.tools: List[BaseTool] = []
-        self._setup_tools()
+        self._initialized = False
+        self.client = None
     
-    def _setup_tools(self) -> None:
-        """Set up MCP tools, falling back to mocks if server unavailable."""
+    async def initialize(self) -> None:
+        """
+        Asynchronously set up MCP tools.
+        Calls _setup_mock_tools as failure fallback.
+        """
+        if self._initialized:
+            return
+            
+        mcp_servers_config = os.getenv("MCP_SERVERS_CONFIG")
         mcp_url = os.getenv("MCP_DOCS_SERVER_URL")
+        mcp_command = os.getenv("MCP_DOCS_SERVER_COMMAND")
         
-        if mcp_url:
+        if mcp_servers_config or mcp_url or mcp_command:
             try:
-                # Try to connect to real MCP server
-                # Note: In production, use langchain_mcp_adapters.client.MultiServerMCPClient
-                logger.info(f"Attempting to connect to MCP server at {mcp_url}")
+                from langchain_mcp_adapters.client import MultiServerMCPClient
                 
-                # For now, we'll use mock tools as MCP server setup varies
-                # In production, uncomment and configure:
-                # from langchain_mcp_adapters.client import MultiServerMCPClient
-                # self.client = MultiServerMCPClient({
-                #     "docs_server": {
-                #         "url": mcp_url,
-                #         "transport": "sse",
-                #     }
-                # })
-                # self.tools = self.client.get_tools()
-                # self.mcp_available = True
+                servers = {}
                 
-                raise ConnectionError("MCP server not configured - using mocks")
+                # Priority 1: Multi-server JSON config
+                if mcp_servers_config:
+                    try:
+                        config_data = json.loads(mcp_servers_config)
+                        for name, config in config_data.items():
+                            logger.info(f"Configuring MCP server '{name}'")
+                            
+                            # Handle command args if simple string
+                            if "command" in config and "args" not in config:
+                                parts = config["command"].split()
+                                config["command"] = parts[0]
+                                config["args"] = parts[1:]
+                            
+                            # Ensure transport is set (default to stdio if command is present)
+                            if "transport" not in config:
+                                if "command" in config:
+                                    config["transport"] = "stdio"
+                                elif "url" in config:
+                                    config["transport"] = "sse"
+                            
+                            servers[name] = config
+                    except json.JSONDecodeError as e:
+                        logger.error(f"Failed to parse MCP_SERVERS_CONFIG: {e}")
+                
+                # Priority 2: Legacy single server config (only if not in servers)
+                if not servers:
+                    if mcp_url:
+                        logger.info(f"Connecting to MCP server via SSE at {mcp_url}")
+                        servers["docs_server"] = {
+                            "url": mcp_url,
+                            "transport": "sse",
+                        }
+                    elif mcp_command:
+                        logger.info(f"Connecting to local MCP server via Stdio: {mcp_command}")
+                        # Split command if it's a string
+                        cmd_parts = mcp_command.split()
+                        servers["docs_server"] = {
+                            "command": cmd_parts[0],
+                            "args": cmd_parts[1:],
+                            "transport": "stdio",
+                        }
+                
+                if servers:
+                    self.client = MultiServerMCPClient(servers)
+                    # MultiServerMCPClient.get_tools is an async method
+                    self.tools = await self.client.get_tools()
+                    self.mcp_available = True
+                    logger.info(f"Successfully connected to {len(servers)} MCP servers. Found {len(self.tools)} tools.")
+                else:
+                    logger.warning("No valid MCP servers configured. Falling back to mocks.")
+                    self._setup_mock_tools()
                 
             except Exception as e:
-                logger.warning(f"MCP server unavailable: {e}. Using mock tools.")
+                logger.warning(f"Failed to connect to real MCP server: {e}. Falling back to mocks.")
                 self._setup_mock_tools()
         else:
-            logger.info("MCP_DOCS_SERVER_URL not set. Using mock tools.")
+            logger.info("No MCP server configuration found. Using mock tools.")
             self._setup_mock_tools()
+            
+        self._initialized = True
     
     def _setup_mock_tools(self) -> None:
         """Set up mock tools for offline operation."""
@@ -525,7 +574,9 @@ class MCPWrapper:
         self.mcp_available = False
     
     def get_tools(self) -> List[BaseTool]:
-        """Get list of available tools."""
+        """Get list of available tools. Returns mock tools if not initialized."""
+        if not self.tools and not self._initialized:
+            self._setup_mock_tools()
         return self.tools
     
     def should_use_tools(self, task: Dict[str, Any]) -> bool:
@@ -561,11 +612,16 @@ class MCPWrapper:
 _mcp_wrapper: Optional[MCPWrapper] = None
 
 
-def get_mcp_wrapper() -> MCPWrapper:
-    """Get or create the global MCP wrapper instance."""
+async def get_mcp_wrapper() -> MCPWrapper:
+    """Get or create the global MCP wrapper instance and initialize it."""
     global _mcp_wrapper
     if _mcp_wrapper is None:
         _mcp_wrapper = MCPWrapper()
+    
+    # Ensure it's initialized (async)
+    if not _mcp_wrapper._initialized:
+        await _mcp_wrapper.initialize()
+        
     return _mcp_wrapper
 
 
@@ -666,7 +722,7 @@ async def generation_node(
     
     # Get LLM and tools
     llm = get_generation_llm()
-    mcp = get_mcp_wrapper()
+    mcp = await get_mcp_wrapper()
     tools = mcp.get_tools()
     
     # Bind tools to LLM

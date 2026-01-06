@@ -338,13 +338,19 @@ def create_redis_saver(
         >>> saver = create_redis_saver("redis://localhost:6379")
     """
     # Import here to provide clear error if package not installed
+    # Import here to provide clear error if package not installed
     try:
-        from langgraph_checkpoint_redis import AsyncRedisSaver
-    except ImportError as e:
-        raise ImportError(
-            "langgraph-checkpoint-redis is required for Redis persistence. "
-            "Install it with: pip install langgraph-checkpoint-redis"
-        ) from e
+        # Try standard import path (namespace package)
+        from langgraph.checkpoint.redis.aio import AsyncRedisSaver
+    except ImportError:
+        try:
+            # Fallback to direct package import if available
+            from langgraph_checkpoint_redis import AsyncRedisSaver
+        except ImportError as e:
+            raise ImportError(
+                "langgraph-checkpoint-redis is required for Redis persistence. "
+                "Install it with: pip install langgraph-checkpoint-redis"
+            ) from e
     
     # Resolve Redis URL
     url = redis_url or os.getenv("REDIS_URL")

@@ -113,7 +113,7 @@ async def test_4_mcp_tools():
     try:
         from agent.execution_layer import get_mcp_wrapper
         
-        mcp = get_mcp_wrapper()
+        mcp = await get_mcp_wrapper()
         tools = mcp.get_tools()
         
         print(f"  MCP Available: {mcp.mcp_available}")
