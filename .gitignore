@@ -9,8 +9,8 @@ target/
 
 # Generated project
 generated_project/
-
-
+api/__pycache__/
+agent/__pycache__/
 
 # Dependency directories
 node_modules/
