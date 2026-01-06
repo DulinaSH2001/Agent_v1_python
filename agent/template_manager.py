@@ -57,6 +57,7 @@ class TemplateManager:
     
     def _discover_templates(self) -> None:
         """Discover all available templates in the templates directory."""
+        logger.info(f"Discovering templates in: {self.templates_dir.absolute()}")
         if not self.templates_dir.exists():
             logger.warning(f"Templates directory not found: {self.templates_dir}")
             return
@@ -133,12 +134,14 @@ class TemplateManager:
                     with open(file_path, 'r', encoding='utf-8') as f:
                         content = f.read()
                     files[rel_path_str] = content
+                    # logger.debug(f"Loaded template file: {rel_path_str}")
                 except UnicodeDecodeError:
                     # Skip binary files
-                    logger.debug(f"Skipping binary file: {rel_path_str}")
+                    logger.warning(f"Skipping binary file: {rel_path_str}")
                 except Exception as e:
                     logger.warning(f"Failed to read {rel_path_str}: {e}")
         
+        logger.info(f"Loaded {len(files)} files from {template_dir.name}")
         return files
     
     def list_templates(self) -> List[Dict]:

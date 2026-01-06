@@ -39,7 +39,7 @@ async def template_selection_node(
     """
     logger.info("template_selection_node: Selecting template")
     
-    user_query = state.get("user_query", "")
+    user_query = state.get("user_prompt", "")
     if not user_query:
         logger.warning("No user query available for template selection")
         return {}
@@ -98,81 +98,73 @@ async def template_upload_node(
     logger.info(f"Uploading {len(template_files)} template files")
     build_logs.append(f"Phase 1: Uploading {template_name} template ({len(template_files)} files)")
     
-    # Import Azure upload logic (reuse from persistence_node)
+    # Get org_slug and project_slug from state
+    org_slug = state.get("org_slug")
+    project_slug = state.get("project_slug")
+    
+    if not org_slug or not project_slug:
+        logger.error("template_upload_node: Missing org_slug or project_slug in state")
+        build_logs.append("Error: Missing organization or project slugs for template upload")
+        return {"build_logs": build_logs}
+    
+    # Get backend URL
+    import os
+    backend_url = os.getenv("BACKEND_URL", "http://localhost:8080")
+    webhook_secret = os.getenv("FASTAPI_WEBHOOK_SECRET", "")
+    
+    # Prepare files array for backend
+    files_payload = [
+        {"path": path, "content": content}
+        for path, content in template_files.items()
+    ]
+    
+    logger.info(f"template_upload_node: Sending {len(files_payload)} template files to backend for {org_slug}/{project_slug}")
+    build_logs.append(f"Phase 1: Uploading {len(files_payload)} template files to {org_slug}/{project_slug}")
+    
     try:
-        import os
-        from azure.storage.blob.aio import BlobServiceClient
-        from azure.core.exceptions import ResourceExistsError
+        import aiohttp
         
-        # Import SAS token helper
-        import sys
-        from pathlib import Path
-        agent_root = Path(__file__).parent
-        sys.path.insert(0, str(agent_root))
-        from execution_layer import request_sas_token
+        endpoint = f"{backend_url}/api/v1/agents/upload-files"
+        payload = {
+            "orgSlug": org_slug,
+            "projectSlug": project_slug,
+            "files": files_payload
+        }
         
-        # Get thread_id for container naming
-        thread_id = config.get("configurable", {}).get("thread_id", "unknown")
-        container_name = f"project-{thread_id}"
-        container_name = "".join(c if c.isalnum() or c == "-" else "-" for c in container_name.lower())
+        headers = {
+            "Authorization": f"Bearer {webhook_secret}",
+            "Content-Type": "application/json"
+        }
         
-        # Request SAS token
-        sas_data = await request_sas_token(container_name)
-        
-        if not sas_data:
-            # Fallback to connection string
-            logger.warning("SAS token unavailable for template upload, using connection string")
-            connection_string = os.getenv("AZURE_STORAGE_CONNECTION_STRING")
-            
-            if not connection_string:
-                logger.error("No Azure credentials available")
-                build_logs.append("Error: Cannot upload template - no Azure credentials")
-                return {"build_logs": build_logs}
-        
-        # Create BlobServiceClient
-        if sas_data:
-            sas_url = sas_data.get("sasUrl")
-            blob_service = BlobServiceClient(account_url=sas_url)
-        else:
-            blob_service = BlobServiceClient.from_connection_string(connection_string)
-        
-        container_client = blob_service.get_container_client(container_name)
-        
-        async with blob_service:
-            # Ensure container exists
-            try:
-                await container_client.create_container()
-                logger.info(f"Created container: {container_name}")
-            except ResourceExistsError:
-                logger.info(f"Container exists: {container_name}")
-            except Exception as e:
-                logger.info(f"Container check: {e}")
-            
-            # Upload each template file
-            upload_count = 0
-            for file_path, content in template_files.items():
-                try:
-                    blob_client = container_client.get_blob_client(file_path)
-                    await blob_client.upload_blob(
-                        content.encode("utf-8"),
-                        overwrite=True,
-                    )
-                    upload_count += 1
-                    logger.debug(f"Uploaded template file: {file_path}")
-                except Exception as e:
-                    error_msg = f"Failed to upload {file_path}: {e}"
-                    logger.error(error_msg)
-                    build_logs.append(f"Error: {error_msg}")
-            
-            build_logs.append(f"Phase 1 Complete: Uploaded {upload_count}/{len(template_files)} template files")
-            logger.info(f"Template upload complete: {upload_count} files")
-        
+        async with aiohttp.ClientSession() as session:
+            async with session.post(endpoint, json=payload, headers=headers, timeout=120) as response:
+                if response.status == 200:
+                    data = await response.json()
+                    result = data.get("data", {})
+                    success_count = 0
+                    
+                    # Log individual file results
+                    for file_res in result.get("results", []):
+                        if file_res.get("success"):
+                            success_count += 1
+                        else:
+                            error = file_res.get("error", "Unknown error")
+                            logger.error(f"Failed to upload {file_res.get('path')}: {error}")
+                    
+                    if success_count == len(files_payload):
+                        logger.info(f"Successfully uploaded all {success_count} template files")
+                        build_logs.append(f"Phase 1 Complete: All {success_count} template files uploaded")
+                    else:
+                        logger.warning(f"Uploaded {success_count}/{len(files_payload)} template files")
+                        build_logs.append(f"Phase 1 Warning: Uploaded {success_count}/{len(files_payload)} template files")
+                
+                else:
+                    error_text = await response.text()
+                    logger.error(f"Backend upload failed with status {response.status}: {error_text}")
+                    build_logs.append(f"Error: Backend template upload failed (Status {response.status})")
+                    
         return {"build_logs": build_logs}
         
-    except ImportError as e:
-        logger.error(f"Azure SDK not available: {e}")
-        build_logs.append("Error: Azure SDK not installed")
-        return {"build_logs": build_logs}
     except Exception as e:
         error_msg = f"Template upload failed: {e}"
         logger.error(error_msg)

@@ -81,6 +81,8 @@ class AgentState(TypedDict):
     build_status: str
     selected_template: Optional[str]
     template_files: Dict[str, str]
+    org_slug: Optional[str]
+    project_slug: Optional[str]
 
 
 
@@ -528,6 +530,8 @@ async def initialize_agent(
 def get_initial_state(
     manifest: Optional[Dict[str, Any]] = None,
     user_prompt: str = "",
+    org_slug: Optional[str] = None,
+    project_slug: Optional[str] = None,
 ) -> AgentState:
     """
     Create an initial state for graph execution.
@@ -535,6 +539,8 @@ def get_initial_state(
     Args:
         manifest: Optional backend API manifest. Defaults to empty dict.
         user_prompt: The user's frontend requirements.
+        org_slug: Organization slug for file storage path.
+        project_slug: Project slug for file storage path.
     
     Returns:
         An AgentState dictionary with initialized values.
@@ -542,7 +548,9 @@ def get_initial_state(
     Example:
         >>> state = get_initial_state(
         ...     manifest={"endpoints": [...]},
-        ...     user_prompt="Create a modern dashboard with dark mode"
+        ...     user_prompt="Create a modern dashboard with dark mode",
+        ...     org_slug="my-org",
+        ...     project_slug="my-project"
         ... )
     """
     return AgentState(
@@ -556,4 +564,8 @@ def get_initial_state(
         approved=False,
         build_ready=False,
         build_status="pending",
+        selected_template=None,
+        template_files={},
+        org_slug=org_slug,
+        project_slug=project_slug,
     )

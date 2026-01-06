@@ -947,9 +947,8 @@ async def persistence_node(
     """
     The Uploader node - uploads the virtual file system to Azure Blob Storage.
     
-    This node takes all files from state['file_system'] and uploads them
-    to an Azure Blob Storage container named 'project-{thread_id}'.
-    Directory structure is preserved in blob names.
+    This node takes all files from state['file_system'] and sends them
+    to the backend API for upload to Azure Blob Storage.
     
     Args:
         state: Current agent state with file_system.
@@ -958,7 +957,7 @@ async def persistence_node(
     Returns:
         State update with build_ready flag and build_logs.
     """
-    logger.info("persistence_node: Starting file upload to Azure Blob Storage")
+    logger.info("persistence_node: Starting file upload via backend proxy")
     
     # Get mutable build logs
     build_logs: List[str] = list(state.get("build_logs", []))
@@ -970,96 +969,81 @@ async def persistence_node(
         build_logs.append("Warning: No files in file system to upload")
         return {"build_ready": False, "build_logs": build_logs}
     
-    # Get thread_id for container naming
-    thread_id = config.get("configurable", {}).get("thread_id", "unknown")
-    container_name = f"project-{thread_id}"
+    # Get org_slug and project_slug from state
+    org_slug = state.get("org_slug")
+    project_slug = state.get("project_slug")
     
-    # Sanitize container name (Azure requirements: lowercase, alphanumeric and hyphens)
-    container_name = "".join(c if c.isalnum() or c == "-" else "-" for c in container_name.lower())
+    if not org_slug or not project_slug:
+        logger.error("persistence_node: Missing org_slug or project_slug in state")
+        build_logs.append("Error: Missing organization or project slugs for file upload")
+        return {"build_ready": False, "build_logs": build_logs}
     
-    # Try SAS token authentication first (preferred method)
-    sas_data = await request_sas_token(container_name)
+    # Get backend URL
+    backend_url = os.getenv("BACKEND_URL", "http://localhost:8080")
+    webhook_secret = os.getenv("FASTAPI_WEBHOOK_SECRET", "")
     
-    if not sas_data:
-        # Fallback to connection string if SAS token fails
-        logger.warning("persistence_node: SAS token unavailable, trying connection string fallback")
-        connection_string = os.getenv("AZURE_STORAGE_CONNECTION_STRING")
-        
-        if not connection_string:
-            logger.warning("persistence_node: No Azure credentials available. Skipping upload.")
-            build_logs.append("Warning: Azure credentials not configured. Files stored in memory only.")
-            build_logs.append(f"Files ready for upload: {len(file_system)}")
-            for path in file_system.keys():
-                build_logs.append(f"  - {path}")
-            return {"build_ready": False, "build_logs": build_logs}
+    # Prepare files array for backend
+    files_payload = [
+        {"path": path, "content": content}
+        for path, content in file_system.items()
+    ]
+    
+    logger.info(f"persistence_node: Sending {len(files_payload)} files to backend for {org_slug}/{project_slug}")
+    build_logs.append(f"Uploading {len(files_payload)} files to {org_slug}/{project_slug}")
     
     try:
-        # Import Azure SDK
-        from azure.storage.blob.aio import BlobServiceClient, ContainerClient
-        from azure.core.exceptions import ResourceExistsError
+        import aiohttp
         
-        # Create BlobServiceClient using SAS token or connection string
-        if sas_data:
-            logger.info(f"Using SAS token authentication for container {container_name}")
-            sas_url = sas_data.get("sasUrl")
-            blob_service = BlobServiceClient(account_url=sas_url)
-            container_client = blob_service.get_container_client(container_name)
-            build_logs.append(f"Connected to Azure using SAS token (expires: {sas_data.get('expiresOn')})")
-        else:
-            logger.info(f"Using connection string authentication for container {container_name}")
-            blob_service = BlobServiceClient.from_connection_string(connection_string)
-            container_client = blob_service.get_container_client(container_name)
+        endpoint = f"{backend_url}/api/v1/agents/upload-files"
+        payload = {
+            "orgSlug": org_slug,
+            "projectSlug": project_slug,
+            "files": files_payload
+        }
         
-        async with blob_service:
-            # Ensure container exists
-            try:
-                await container_client.create_container()
-                build_logs.append(f"Created container: {container_name}")
-                logger.info(f"persistence_node: Created container {container_name}")
-            except ResourceExistsError:
-                build_logs.append(f"Using existing container: {container_name}")
-                logger.info(f"persistence_node: Container {container_name} exists")
-            except Exception as e:
-                # Container may already exist or we don't have permission to create
-                logger.info(f"persistence_node: Container check: {e}")
-            
-            # Upload each file
-            upload_count = 0
-            for file_path, content in file_system.items():
-                try:
-                    # Use file path as blob name (preserves directory structure)
-                    blob_client = container_client.get_blob_client(file_path)
+        headers = {
+            "Authorization": f"Bearer {webhook_secret}",
+            "Content-Type": "application/json"
+        }
+        
+        async with aiohttp.ClientSession() as session:
+            async with session.post(endpoint, json=payload, headers=headers, timeout=120) as response:
+                if response.status == 200:
+                    data = await response.json()
+                    result = data.get("data", {})
+                    uploaded = result.get("uploaded", 0)
+                    total = result.get("total", len(files_payload))
                     
-                    # Upload content as bytes
-                    await blob_client.upload_blob(
-                        content.encode("utf-8"),
-                        overwrite=True,
-                    )
+                    logger.info(f"persistence_node: Uploaded {uploaded}/{total} files")
+                    build_logs.append(f"✅ Uploaded {uploaded}/{total} files to Azure")
                     
-                    upload_count += 1
-                    logger.debug(f"persistence_node: Uploaded {file_path}")
+                    # Log any failed files
+                    results = result.get("results", [])
+                    for r in results:
+                        if not r.get("success"):
+                            error_msg = f"Failed: {r.get('path')} - {r.get('error')}"
+                            logger.warning(error_msg)
+                            build_logs.append(error_msg)
                     
-                except Exception as e:
-                    error_msg = f"Failed to upload {file_path}: {str(e)}"
-                    logger.error(f"persistence_node: {error_msg}")
+                    return {"build_ready": uploaded > 0, "build_logs": build_logs}
+                else:
+                    text = await response.text()
+                    error_msg = f"Backend upload failed with status {response.status}: {text}"
+                    logger.error(error_msg)
                     build_logs.append(f"Error: {error_msg}")
-            
-            build_logs.append(f"Uploaded {upload_count}/{len(file_system)} files to Azure")
-            logger.info(f"persistence_node: Uploaded {upload_count} files to {container_name}")
-        
-        return {"build_ready": True, "build_logs": build_logs}
-
-        
+                    return {"build_ready": False, "build_logs": build_logs}
+                    
     except ImportError:
-        logger.error("persistence_node: azure-storage-blob package not installed")
-        build_logs.append("Error: Azure SDK not installed. Run: pip install azure-storage-blob")
+        logger.error("persistence_node: aiohttp package not installed")
+        build_logs.append("Error: aiohttp not installed. Run: pip install aiohttp")
         return {"build_ready": False, "build_logs": build_logs}
         
     except Exception as e:
-        error_msg = f"Azure upload failed: {str(e)}"
+        error_msg = f"Backend upload failed: {str(e)}"
         logger.error(f"persistence_node: {error_msg}")
         build_logs.append(f"Error: {error_msg}")
         return {"build_ready": False, "build_logs": build_logs}
+
 
 
 # =============================================================================
