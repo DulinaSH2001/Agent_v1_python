@@ -32,6 +32,7 @@ from agent.execution_layer import (
     get_mcp_wrapper,
     list_generated_files,
 )
+from agent.validation_layer import validation_node
 
 import json
 import logging
@@ -659,6 +660,47 @@ def check_approval(state: AgentState) -> Literal["template_upload", "planner"]:
         return "planner"
 
 
+def check_validation(state: AgentState) -> Literal["persistence", "generator", "escalation"]:
+    """
+    Conditional edge: Determine next step after validation node.
+
+    Routes based on validation results:
+    - PASSED: Continue to persistence (upload)
+    - FAILED: Loop back to generator with fix tasks
+    - CRITICAL: Escalate to human (critical security issues)
+
+    Args:
+        state: Current agent state with build_status
+
+    Returns:
+        "persistence" - Validation passed, proceed to upload
+        "generator" - Validation failed, regenerate with fixes
+        "escalation" - Critical issues, need human intervention
+    """
+    build_status = state.get("build_status", "")
+    iteration_count = state.get("iteration_count", 0)
+
+    # Prevent infinite validation loops
+    MAX_VALIDATION_RETRIES = 2
+
+    if build_status == "validation_critical":
+        logger.warning(
+            "check_validation: CRITICAL security issues - escalating")
+        return "escalation"
+    elif build_status == "validation_failed":
+        if iteration_count > MAX_VALIDATION_RETRIES:
+            logger.warning(
+                f"check_validation: Max retries ({MAX_VALIDATION_RETRIES}) reached - escalating")
+            return "escalation"
+        logger.info(
+            "check_validation: Validation failed - routing to generator for fixes")
+        return "generator"
+    else:
+        logger.info(
+            "check_validation: Validation passed - proceeding to persistence")
+        return "persistence"
+
+
 # =============================================================================
 # Graph Assembly
 # =============================================================================
@@ -708,6 +750,7 @@ def create_antigravity_graph(
     builder.add_node("template_selection", template_selection_node)
     builder.add_node("planner", plan_node)
     builder.add_node("generator", generation_node)
+    builder.add_node("validator", validation_node)  # NEW: Pre-build validation
     # Phase 1: Upload template
     builder.add_node("template_upload", template_upload_node)
     # Phase 2: Upload custom files
@@ -721,6 +764,18 @@ def create_antigravity_graph(
         # Upload template before generation
         builder.add_edge("planner", "template_upload")
         builder.add_edge("template_upload", "generator")
+        # NEW: Validate before upload
+        builder.add_edge("generator", "validator")
+        # Conditional edge from validator
+        builder.add_conditional_edges(
+            "validator",
+            check_validation,
+            {
+                "persistence": "persistence",
+                "generator": "generator",
+                "escalation": "escalation",
+            }
+        )
     else:
         # Full HITL flow with approval node
         builder.add_node("approval", approval_node)
@@ -741,8 +796,23 @@ def create_antigravity_graph(
         # Chain: template_upload -> generator (Phase 2)
         builder.add_edge("template_upload", "generator")
 
+        # NEW: Validate after generation
+        builder.add_edge("generator", "validator")
+
+        # Conditional edge from validator
+        builder.add_conditional_edges(
+            "validator",
+            check_validation,
+            {
+                "persistence": "persistence",
+                "generator": "generator",
+                "escalation": "escalation",
+            }
+        )
+
     # Chain: generator -> persistence
-    builder.add_edge("generator", "persistence")
+    # NOTE: Removed direct edge - now goes through validator
+    # builder.add_edge("generator", "persistence")
 
     if enable_reflexion:
         # Add reflexion nodes

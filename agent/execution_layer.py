@@ -12,12 +12,13 @@ of the Antigravity workflow, executing after human approval.
 
 from __future__ import annotations
 from agent.ably_utils import publish_tool_usage, publish_task_progress
-from agent.code_validator import validate_file
+from agent.code_validator import validate_file, validate_typescript_advanced, validate_security
 
 import asyncio
 import json
 import logging
 import os
+import re
 from typing import Any, Dict, List, Optional, Tuple
 
 from dotenv import load_dotenv
@@ -36,6 +37,141 @@ load_dotenv()
 
 # Configure logging
 logger = logging.getLogger(__name__)
+
+
+# =============================================================================
+# Generation Guard Rails
+# =============================================================================
+
+class GenerationGuardRails:
+    """
+    Enforces constraints during code generation to prevent:
+    - Oversized files
+    - Excessive complexity
+    - Security vulnerabilities
+    - Poor code quality
+    """
+
+    # File size limits (in characters)
+    MAX_FILE_SIZE = 8000  # ~8KB per file
+    MAX_TOTAL_SIZE = 150000  # ~150KB total project
+
+    # Complexity limits
+    MAX_NESTING_DEPTH = 6
+    MAX_FUNCTION_LENGTH = 200  # lines
+    MAX_FILE_COUNT = 60
+
+    @staticmethod
+    def check_file_size(file_path: str, content: str) -> Optional[str]:
+        """Check if file exceeds size limits."""
+        size = len(content)
+        if size > GenerationGuardRails.MAX_FILE_SIZE:
+            return f"File too large ({size} chars, max {GenerationGuardRails.MAX_FILE_SIZE}). Split into smaller modules."
+        return None
+
+    @staticmethod
+    def check_total_size(file_system: Dict[str, str]) -> Optional[str]:
+        """Check if total project size is reasonable."""
+        total = sum(len(content) for content in file_system.values())
+        if total > GenerationGuardRails.MAX_TOTAL_SIZE:
+            return f"Project too large ({total} chars, max {GenerationGuardRails.MAX_TOTAL_SIZE})"
+        return None
+
+    @staticmethod
+    def check_nesting_depth(content: str) -> Optional[str]:
+        """Check for excessive nesting (code complexity)."""
+        lines = content.split('\n')
+        max_indent = 0
+        for line in lines:
+            # Skip empty lines and comments
+            stripped = line.strip()
+            if not stripped or stripped.startswith('//') or stripped.startswith('*'):
+                continue
+
+            indent = len(line) - len(line.lstrip())
+            if indent > max_indent:
+                max_indent = indent
+
+        depth = max_indent // 2  # Assuming 2-space indentation
+        if depth > GenerationGuardRails.MAX_NESTING_DEPTH:
+            return f"Excessive nesting depth ({depth}, max {GenerationGuardRails.MAX_NESTING_DEPTH}). Extract functions/components."
+        return None
+
+    @staticmethod
+    def validate_generation(
+        file_path: str,
+        content: str,
+        file_system: Dict[str, str]
+    ) -> List[str]:
+        """Run all guard rail checks."""
+        errors = []
+
+        if err := GenerationGuardRails.check_file_size(file_path, content):
+            errors.append(err)
+
+        if err := GenerationGuardRails.check_total_size(file_system):
+            errors.append(err)
+
+        if err := GenerationGuardRails.check_nesting_depth(content):
+            errors.append(err)
+
+        return errors
+
+
+def clean_generated_code(content: str) -> str:
+    """
+    Clean and normalize generated code.
+
+    Removes:
+    - Markdown code blocks
+    - Placeholder comments like "// ... existing code ..."
+    - Extra whitespace
+    - Normalizes line endings
+
+    Args:
+        content: Raw generated code
+
+    Returns:
+        Cleaned code
+    """
+    # Remove markdown code blocks
+    if content.startswith("```"):
+        lines = content.split('\n')
+        # Remove first line (```typescript, ```tsx, etc.)
+        if lines:
+            lines = lines[1:]
+        # Remove last line if it's ```
+        if lines and lines[-1].strip() == "```":
+            lines = lines[:-1]
+        content = '\n'.join(lines)
+
+    # Remove placeholder comments
+    placeholder_patterns = [
+        r'//\s*\.\.\.\s*existing\s*code\s*\.\.\..*$',
+        r'//\s*\.\.\.\s*rest\s*of\s*(the\s*)?code\s*\.\.\..*$',
+        r'//\s*TODO:.*$',
+        r'/\*\s*\.\.\.\s*existing\s*code\s*\.\.\.\s*\*/',
+        r'/\*\s*\.\.\.\s*rest\s*of\s*(the\s*)?code\s*\.\.\.\s*\*/',
+    ]
+
+    for pattern in placeholder_patterns:
+        content = re.sub(pattern, '', content,
+                         flags=re.IGNORECASE | re.MULTILINE)
+
+    # Normalize line endings
+    content = content.replace('\r\n', '\n')
+
+    # Remove trailing whitespace from each line
+    lines = [line.rstrip() for line in content.split('\n')]
+    content = '\n'.join(lines)
+
+    # Remove multiple consecutive blank lines
+    content = re.sub(r'\n{3,}', '\n\n', content)
+
+    # Ensure single trailing newline
+    content = content.rstrip() + '\n'
+
+    return content
 
 
 # =============================================================================
@@ -1463,19 +1599,62 @@ Generate the complete file content. Return ONLY the code, no markdown formatting
             # Extract code from response
             code = response.content.strip()
 
-            # Clean up potential markdown formatting
-            if code.startswith("```"):
-                lines = code.split("\n")
-                # Remove first line (```typescript or similar)
-                lines = lines[1:]
-                # Remove last line if it's just ```
-                if lines and lines[-1].strip() == "```":
-                    lines = lines[:-1]
-                code = "\n".join(lines)
+            # Clean generated code (remove markdown, placeholders, etc.)
+            code = clean_generated_code(code)
+
+            # =================================================================
+            # GUARD RAILS: Validate generation quality
+            # =================================================================
+
+            guard_rail_errors = GenerationGuardRails.validate_generation(
+                file_path, code, file_system
+            )
+
+            if guard_rail_errors:
+                logger.warning(
+                    f"generation_node: Guard rail violations for {file_path}")
+                for error in guard_rail_errors:
+                    build_logs.append(f"⚠️  Guard rail: {file_path} - {error}")
+
+                # If file is too large, add a warning but continue
+                # The validation_node will catch it later
+                if any("too large" in err.lower() for err in guard_rail_errors):
+                    build_logs.append(
+                        f"Note: {file_path} may need to be split into smaller files")
+
+            # =================================================================
+            # IMMEDIATE VALIDATION: Basic syntax check
+            # =================================================================
+
+            is_valid, syntax_error = validate_file(file_path, code)
+            if not is_valid:
+                logger.error(
+                    f"generation_node: Syntax error in {file_path}: {syntax_error}")
+                build_logs.append(
+                    f"❌ Syntax error in {file_path}: {syntax_error}")
+                # Still store the file - validation_node will create fix tasks
+                file_system[file_path] = code
+                continue
+
+            # =================================================================
+            # SECURITY CHECK: Quick security scan
+            # =================================================================
+
+            if file_path.endswith(('.ts', '.tsx', '.js', '.jsx')):
+                security_issues = validate_security(code, file_path)
+                critical_security = [
+                    issue for issue in security_issues if issue.severity == "ERROR"]
+
+                if critical_security:
+                    logger.warning(
+                        f"generation_node: Security issues in {file_path}")
+                    for issue in critical_security[:3]:  # First 3 issues
+                        build_logs.append(
+                            f"🔒 Security: {file_path} - {issue.message}")
 
             # Store in file system
             file_system[file_path] = code
-            build_logs.append(f"Generated: {file_path} ({len(code)} bytes)")
+            build_logs.append(f"✅ Generated: {file_path} ({len(code)} bytes)")
             logger.info(f"generation_node: Generated {file_path}")
 
         except Exception as e:
