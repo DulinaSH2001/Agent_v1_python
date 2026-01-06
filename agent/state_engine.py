@@ -79,6 +79,9 @@ class AgentState(TypedDict):
     approved: bool
     build_ready: bool
     build_status: str
+    selected_template: Optional[str]
+    template_files: Dict[str, str]
+
 
 
 # =============================================================================

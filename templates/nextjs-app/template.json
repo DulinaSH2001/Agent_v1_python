@@ -1,0 +1,34 @@
+{
+    "name": "nextjs-typescript-tailwind",
+    "framework": "nextjs",
+    "language": "typescript",
+    "styling": "tailwind",
+    "version": "16.0",
+    "description": "Next.js 16 with TypeScript, Tailwind CSS, and Shadcn UI components",
+    "features": [
+        "App Router (app/)",
+        "TypeScript",
+        "Tailwind CSS",
+        "Shadcn UI components",
+        "Server Components",
+        "Server Actions support",
+        "Zod schema validation",
+        "Utility functions (lib/utils)"
+    ],
+    "dependencies": {
+        "next": "^16.0.0",
+        "react": "^19.0.0",
+        "react-dom": "^19.0.0",
+        "typescript": "^5.0.0",
+        "tailwindcss": "^3.4.0",
+        "zod": "^3.22.0"
+    },
+    "structure": {
+        "app/": "Next.js App Router pages and layouts",
+        "components/": "Reusable React components",
+        "components/ui/": "Shadcn UI components",
+        "lib/": "Utility functions and helpers",
+        "types/": "TypeScript type definitions",
+        "styles/": "Global styles and Tailwind configuration"
+    }
+}

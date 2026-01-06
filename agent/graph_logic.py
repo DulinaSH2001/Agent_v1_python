@@ -397,6 +397,9 @@ from agent.execution_layer import (
     list_generated_files,
 )
 
+# Import template nodes
+from agent.template_nodes import template_selection_node, template_upload_node
+
 # Import reflexion nodes from reflexion module
 from agent.reflexion import (
     trigger_build_node,
@@ -412,23 +415,23 @@ from agent.reflexion import (
 # Conditional Edge: check_approval
 # =============================================================================
 
-def check_approval(state: AgentState) -> Literal["generator", "planner"]:
+def check_approval(state: AgentState) -> Literal["template_upload", "planner"]:
     """
     Conditional edge that routes based on approval status.
     
-    This implements the Antigravity loop:
-    - If approved: proceed to code generation
+    This implements the Antigravity loop with two-phase generation:
+    - If approved: proceed to template upload (Phase 1)
     - If not approved: loop back to planning with updated feedback
     
     Args:
         state: Current agent state with approved flag.
     
     Returns:
-        Next node name: "generator" or "planner"
+        Next node name: "template_upload" or "planner"
     """
     if state.get("approved", False):
-        logger.info("check_approval: Approved -> generator")
-        return "generator"
+        logger.info("check_approval: Approved -> template_upload (Phase 1)")
+        return "template_upload"
     else:
         logger.info("check_approval: Not approved -> planner (Antigravity loop)")
         return "planner"
@@ -480,19 +483,24 @@ def create_antigravity_graph(
     builder = StateGraph(AgentState)
     
     # Add core nodes
+    builder.add_node("template_selection", template_selection_node)
     builder.add_node("planner", plan_node)
     builder.add_node("generator", generation_node)
-    builder.add_node("persistence", persistence_node)
+    builder.add_node("template_upload", template_upload_node)  # Phase 1: Upload template
+    builder.add_node("persistence", persistence_node)  # Phase 2: Upload custom files
     
     if skip_approval:
-        # Simple flow: planner -> generator (no HITL)
+        # Simple flow: template_selection -> planner -> generator (no HITL)
         logger.info("Building graph with skip_approval=True (no HITL)")
-        builder.set_entry_point("planner")
-        builder.add_edge("planner", "generator")
+        builder.set_entry_point("template_selection")
+        builder.add_edge("template_selection", "planner")
+        builder.add_edge("planner", "template_upload")  # Upload template before generation
+        builder.add_edge("template_upload", "generator")
     else:
         # Full HITL flow with approval node
         builder.add_node("approval", approval_node)
-        builder.set_entry_point("planner")
+        builder.set_entry_point("template_selection")
+        builder.add_edge("template_selection", "planner")
         builder.add_edge("planner", "approval")
         
         # Conditional edge from approval
@@ -500,10 +508,13 @@ def create_antigravity_graph(
             "approval",
             check_approval,
             {
-                "generator": "generator",
+                 "template_upload": "template_upload",  # Phase 1: Upload template after approval
                 "planner": "planner",
             }
         )
+        
+        # Chain: template_upload -> generator (Phase 2)
+        builder.add_edge("template_upload", "generator")
     
     # Chain: generator -> persistence
     builder.add_edge("generator", "persistence")

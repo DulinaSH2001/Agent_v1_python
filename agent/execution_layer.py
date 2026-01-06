@@ -30,6 +30,9 @@ from agent.state_engine import AgentState
 # Load environment variables
 load_dotenv()
 
+# Import code validation
+from agent.code_validator import validate_file
+
 # Configure logging
 logger = logging.getLogger(__name__)
 
@@ -732,6 +735,10 @@ async def generation_node(
     manifest = state.get("manifest", {})
     manifest_str = json.dumps(manifest, indent=2) if manifest else "No manifest provided"
     
+    # Get template files to exclude from generation
+    template_files = state.get("template_files", {})
+    template_paths = set(template_files.keys())
+    
     # Process each task
     for i, task in enumerate(plan):
         task_id = task.get("id", f"task-{i}")
@@ -742,6 +749,12 @@ async def generation_node(
         if not file_path:
             logger.warning(f"generation_node: Task {task_id} has no file_path, skipping")
             build_logs.append(f"Skipped task {task_id}: no file path")
+            continue
+        
+        # Skip template files - they were already uploaded in Phase 1
+        if file_path in template_paths and task_type == "create":
+            logger.info(f"generation_node: Skipping template file {file_path} (already uploaded)")
+            build_logs.append(f"Skipped: {file_path} (from template)")
             continue
         
         if task_type == "delete":
@@ -857,7 +870,77 @@ Generate the complete file content. Return ONLY the code, no markdown formatting
 # Node: PersistenceNode (The Uploader)
 # =============================================================================
 
+
+# =============================================================================
+# Azure SAS Token Helper
+# =============================================================================
+
+async def request_sas_token(container_name: str) -> Optional[Dict[str, Any]]:
+    """
+    Request a SAS token from the backend for Azure Blob Storage uploads.
+    
+    This allows the Agent to upload files without storing Azure credentials locally,
+    and avoids SSL certificate verification issues.
+    
+    Args:
+        container_name: Name of the Azure container to upload to
+        
+    Returns:
+        Dict with sasUrl, containerUrl, expiresOn, etc., or None if failed
+    """
+    backend_url = os.getenv("BACKEND_URL", "http://localhost:4000")
+    webhook_secret = os.getenv("FASTAPI_WEBHOOK_SECRET")
+    
+    if not webhook_secret:
+        logger.warning("FASTAPI_WEBHOOK_SECRET not set. Cannot authenticate SAS token request.")
+        return None
+    
+    try:
+        import aiohttp
+        
+        endpoint = f"{backend_url}/api/v1/azure/sas-token"
+        payload = {
+            "containerName": container_name,
+            "expiresInMinutes": 60,
+            "permissions": "racwdl"  # read, add, create, write, delete, list
+        }
+        
+        headers = {
+            "Authorization": f"Bearer {webhook_secret}",
+            "Content-Type": "application/json"
+        }
+        
+        logger.info(f"Requesting SAS token from {endpoint}")
+        
+        async with aiohttp.ClientSession() as session:
+            async with session.post(endpoint, json=payload, headers=headers, timeout=10) as response:
+                if response.status == 200:
+                    data = await response.json()
+                    if data.get("success"):
+                        logger.info("Successfully obtained SAS token")
+                        return data.get("data")
+                    else:
+                        logger.error(f"SAS token request failed: {data.get('error')}")
+                        return None
+                else:
+                    text = await response.text()
+                    logger.error(f"SAS token request failed with status {response.status}: {text}")
+                    return None
+                    
+    except ImportError:
+        logger.error("aiohttp not installed. Run: pip install aiohttp")
+        return None
+    except Exception as e:
+        logger.error(f"Failed to request SAS token: {e}")
+        return None
+
+
+# =============================================================================
+# Node: PersistenceNode (The Uploader)
+# =============================================================================
+
 async def persistence_node(
+
     state: AgentState,
     config: RunnableConfig,
 ) -> Dict[str, Any]:
@@ -894,26 +977,41 @@ async def persistence_node(
     # Sanitize container name (Azure requirements: lowercase, alphanumeric and hyphens)
     container_name = "".join(c if c.isalnum() or c == "-" else "-" for c in container_name.lower())
     
-    # Get Azure connection string
-    connection_string = os.getenv("AZURE_STORAGE_CONNECTION_STRING")
+    # Try SAS token authentication first (preferred method)
+    sas_data = await request_sas_token(container_name)
     
-    if not connection_string:
-        logger.warning("persistence_node: AZURE_STORAGE_CONNECTION_STRING not set. Skipping upload.")
-        build_logs.append("Warning: Azure credentials not configured. Files stored in memory only.")
-        build_logs.append(f"Files ready for upload: {len(file_system)}")
-        for path in file_system.keys():
-            build_logs.append(f"  - {path}")
-        return {"build_ready": False, "build_logs": build_logs}
+    if not sas_data:
+        # Fallback to connection string if SAS token fails
+        logger.warning("persistence_node: SAS token unavailable, trying connection string fallback")
+        connection_string = os.getenv("AZURE_STORAGE_CONNECTION_STRING")
+        
+        if not connection_string:
+            logger.warning("persistence_node: No Azure credentials available. Skipping upload.")
+            build_logs.append("Warning: Azure credentials not configured. Files stored in memory only.")
+            build_logs.append(f"Files ready for upload: {len(file_system)}")
+            for path in file_system.keys():
+                build_logs.append(f"  - {path}")
+            return {"build_ready": False, "build_logs": build_logs}
     
     try:
         # Import Azure SDK
-        from azure.storage.blob.aio import BlobServiceClient
+        from azure.storage.blob.aio import BlobServiceClient, ContainerClient
         from azure.core.exceptions import ResourceExistsError
         
-        async with BlobServiceClient.from_connection_string(connection_string) as blob_service:
-            # Get or create container
+        # Create BlobServiceClient using SAS token or connection string
+        if sas_data:
+            logger.info(f"Using SAS token authentication for container {container_name}")
+            sas_url = sas_data.get("sasUrl")
+            blob_service = BlobServiceClient(account_url=sas_url)
             container_client = blob_service.get_container_client(container_name)
-            
+            build_logs.append(f"Connected to Azure using SAS token (expires: {sas_data.get('expiresOn')})")
+        else:
+            logger.info(f"Using connection string authentication for container {container_name}")
+            blob_service = BlobServiceClient.from_connection_string(connection_string)
+            container_client = blob_service.get_container_client(container_name)
+        
+        async with blob_service:
+            # Ensure container exists
             try:
                 await container_client.create_container()
                 build_logs.append(f"Created container: {container_name}")
@@ -921,6 +1019,9 @@ async def persistence_node(
             except ResourceExistsError:
                 build_logs.append(f"Using existing container: {container_name}")
                 logger.info(f"persistence_node: Container {container_name} exists")
+            except Exception as e:
+                # Container may already exist or we don't have permission to create
+                logger.info(f"persistence_node: Container check: {e}")
             
             # Upload each file
             upload_count = 0
@@ -947,6 +1048,7 @@ async def persistence_node(
             logger.info(f"persistence_node: Uploaded {upload_count} files to {container_name}")
         
         return {"build_ready": True, "build_logs": build_logs}
+
         
     except ImportError:
         logger.error("persistence_node: azure-storage-blob package not installed")
