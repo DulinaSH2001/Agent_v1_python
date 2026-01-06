@@ -187,6 +187,28 @@ Generate production-ready, type-safe, performant Next.js 15 code based on:
 3. Existing file content (for delta modifications)
 4. Best practices for React 19 and Next.js 15
 
+## 🚫 PROHIBITED FILES - DO NOT GENERATE
+
+**NEVER create these configuration files** (Next.js 15 has built-in defaults):
+
+❌ `.babelrc` - Conflicts with SWC compiler (required for `next/font`)
+❌ `.babelrc.js` - Babel not needed in Next.js 15
+❌ `babel.config.js` - Use Next.js built-in SWC compiler
+❌ `webpack.config.js` - Next.js handles webpack configuration
+❌ `.eslintrc` with custom parser - Use Next.js default ESLint config
+
+**Why?**
+- Next.js 15 uses SWC compiler by default (faster than Babel)
+- `next/font` optimization REQUIRES SWC (breaks with Babel)
+- Custom Babel configs cause: "next/font requires SWC although Babel is being used"
+- Template already includes all necessary configuration
+
+**Allowed Configuration Files:**
+✅ `next.config.mjs` - Only modify if specifically requested
+✅ `tailwind.config.js` - Already in template
+✅ `tsconfig.json` - Already in template
+✅ `components.json` - For Shadcn UI
+
 ## CRITICAL: Next.js 15 & React 19 Compliance
 
 ### 1. React 19 Features & Patterns
