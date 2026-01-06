@@ -773,7 +773,7 @@ def create_antigravity_graph(
             {
                 "persistence": "persistence",
                 "generator": "generator",
-                "escalation": "escalation",
+                "escalation": END,  # Route to END when escalation node doesn't exist
             }
         )
     else:
@@ -814,11 +814,13 @@ def create_antigravity_graph(
     # NOTE: Removed direct edge - now goes through validator
     # builder.add_edge("generator", "persistence")
 
+    # Always add escalation node for validation critical errors
+    builder.add_node("escalation", escalation_node)
+
     if enable_reflexion:
         # Add reflexion nodes
         builder.add_node("trigger_build", trigger_build_node)
         builder.add_node("reflexion", reflexion_node)
-        builder.add_node("escalation", escalation_node)
 
         # Chain: persistence -> trigger_build
         builder.add_edge("persistence", "trigger_build")
@@ -842,6 +844,8 @@ def create_antigravity_graph(
     else:
         # Simple flow: persistence -> END
         builder.add_edge("persistence", END)
+        # Escalation also ends when no reflexion
+        builder.add_edge("escalation", END)
 
     # Compile with checkpointer if provided
     if checkpointer:
