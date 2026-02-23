@@ -2,7 +2,7 @@
 Antigravity Agent - Reflexion Loop
 
 This module implements the self-correction mechanism for the Antigravity agent:
-- TriggerBuildNode: Publishes build request and waits for external container
+- TriggerBuildNode: Automatically runs npm install && npm run dev
 - ReflexionNode: Analyzes build errors and generates fix plans
 - should_fix: Conditional edge for routing based on build status
 
@@ -26,6 +26,7 @@ from langgraph.types import interrupt
 from pydantic import BaseModel, Field
 
 from agent.state_engine import AgentState
+from agent.auto_build_runner import auto_build_and_fix
 
 # Load environment variables
 load_dotenv()
@@ -187,17 +188,17 @@ export async function createUser(formData: FormData) {
   const schema = z.object({
     email: z.string().email(),
   });
-  
+
   const validated = schema.parse({
     email: formData.get('email'),
   });
-  
+
   // Business logic
   const user = await db.user.create({ data: validated });
-  
+
   // CRITICAL: Revalidate cache
   revalidatePath('/users');
-  
+
   return { success: true, data: user };
 }
 ```
@@ -468,7 +469,7 @@ class MockGithubIssuesTool(BaseTool):
 
 **Issue #12345**: Hydration errors with dynamic content
 **Status**: Open
-**Workaround**: 
+**Workaround**:
 1. Use `suppressHydrationWarning` on elements with dynamic content
 2. Wrap client-only code in `useEffect`
 3. Check for browser extensions modifying DOM
@@ -553,72 +554,67 @@ async def trigger_build_node(
     config: RunnableConfig,
 ) -> Dict[str, Any]:
     """
-    Trigger external build and wait for result via webhook.
+    Automatically run npm install && npm run dev and return build results.
 
-    This node publishes a BUILD_REQUEST event to Ably, then interrupts
-    execution to wait for the external container to send a webhook
-    with the build result.
+    This node runs the build process locally using AutoBuildRunner,
+    capturing compilation errors in real-time. No external webhook needed!
 
     Args:
         state: Current agent state with file_system.
         config: Runnable configuration with thread_id.
 
     Returns:
-        State update with build_status and build_logs from webhook.
+        State update with build_status and build_logs.
     """
-    logger.info("trigger_build_node: Requesting external build")
+    logger.info("trigger_build_node: Starting automated build")
 
     # Extract thread_id
     thread_id = config.get("configurable", {}).get("thread_id", "unknown")
+    file_system = state.get("file_system", {})
 
-    # Get container URL
-    container_url = os.getenv("CONTAINER_BUILD_URL",
-                              "http://localhost:3000/api/build")
+    if not file_system:
+        logger.warning("trigger_build_node: No files to build")
+        return {
+            "build_status": "failed",
+            "build_logs": ["Error: No files generated to build"],
+        }
 
-    # Prepare build request payload
-    build_request = {
-        "type": "BUILD_REQUEST",
-        "thread_id": thread_id,
-        "container_url": container_url,
-        "file_count": len(state.get("file_system", {})),
-        "files": list(state.get("file_system", {}).keys()),
-        "timestamp": __import__("datetime").datetime.utcnow().isoformat(),
-    }
-
-    # Publish to Ably control channel
-    channel_name = f"agent:control:{thread_id}"
-    await publish_to_ably(channel_name, build_request)
+    # Get project identification
+    org_slug = state.get("org_slug", "unknown")
+    project_slug = state.get("project_slug", "unknown")
+    project_name = f"{org_slug}-{project_slug}"
 
     logger.info(
-        f"trigger_build_node: Published BUILD_REQUEST to {channel_name}")
-    logger.info("trigger_build_node: Waiting for build result via webhook...")
+        f"trigger_build_node: Building {project_name} with {len(file_system)} files")
 
-    # Interrupt and wait for webhook to resume with build result
-    # The webhook will call Command(resume={status, logs})
-    build_result = interrupt({
-        "awaiting": "build_status",
-        "thread_id": thread_id,
-        "request": build_request,
-    })
+    try:
+        # Run automated build
+        status, error_logs = await auto_build_and_fix(file_system, project_name)
 
-    # Process the build result from webhook
-    status = build_result.get("status", "failed")
-    logs = build_result.get("logs", [])
+        logger.info(
+            f"trigger_build_node: Build completed with status: {status}")
 
-    if isinstance(logs, str):
-        logs = [logs]
+        # Update build_logs
+        current_logs = list(state.get("build_logs", []))
+        current_logs.append(f"\n{'='*60}")
+        current_logs.append(f"BUILD ATTEMPT - Status: {status}")
+        current_logs.append(f"{'='*60}\n")
+        current_logs.extend(error_logs)
 
-    logger.info(
-        f"trigger_build_node: Build result received - status: {status}")
+        return {
+            "build_status": status,
+            "build_logs": current_logs,
+        }
 
-    # Update build_logs with new logs
-    current_logs = list(state.get("build_logs", []))
-    current_logs.extend(logs)
+    except Exception as e:
+        logger.error(f"trigger_build_node: Build error: {e}")
+        current_logs = list(state.get("build_logs", []))
+        current_logs.append(f"Build runner error: {str(e)}")
 
-    return {
-        "build_status": status,
-        "build_logs": current_logs,
-    }
+        return {
+            "build_status": "failed",
+            "build_logs": current_logs,
+        }
 
 
 # =============================================================================
@@ -673,7 +669,9 @@ async def reflexion_node(
 
     # Get existing files for context
     file_system = state.get("file_system", {})
-    existing_files = "\n".join(f"- {path}" for path in file_system.keys())
+    existing_files = "\n".join(
+        f"- {path}" for path in file_system.keys()
+    )
 
     # Build the analysis prompt
     user_content = f"""## Build Error Logs (Last 20 entries)
@@ -704,15 +702,18 @@ Focus on the root cause. Return ONLY the JSON array, no markdown.
     if "hydration" in error_lower:
         github_context = await github_tool._arun("hydration")
         messages.append(HumanMessage(
-            content=f"## Known GitHub Issues\n{github_context}"))
+            content=f"## Known GitHub Issues\n{github_context}"
+        ))
     elif "server action" in error_lower:
         github_context = await github_tool._arun("server action")
         messages.append(HumanMessage(
-            content=f"## Known GitHub Issues\n{github_context}"))
+            content=f"## Known GitHub Issues\n{github_context}"
+        ))
     elif "turbopack" in error_lower:
         github_context = await github_tool._arun("turbopack")
         messages.append(HumanMessage(
-            content=f"## Known GitHub Issues\n{github_context}"))
+            content=f"## Known GitHub Issues\n{github_context}"
+        ))
 
     try:
         # Generate fix plan
