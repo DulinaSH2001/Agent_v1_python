@@ -689,6 +689,126 @@ def get_generation_llm(
 
 
 # =============================================================================
+# Streaming Helpers - Per-file upload and Ably publish
+# =============================================================================
+
+async def publish_file_generated(
+    thread_id: str,
+    file_path: str,
+    content: str,
+    task_index: int,
+    total_tasks: int,
+) -> bool:
+    """
+    Publish a file_generated event to Ably so the frontend can
+    incrementally mount files into WebContainer as they are created.
+
+    Args:
+        thread_id: Job/thread identifier for the Ably channel.
+        file_path: Path of the generated file.
+        content: Generated file content.
+        task_index: 0-based index of the current task.
+        total_tasks: Total number of tasks in the plan.
+
+    Returns:
+        True if published successfully.
+    """
+    try:
+        from ably import AblyRealtime
+
+        api_key = os.getenv("ABLY_API_KEY")
+        if not api_key:
+            logger.warning("ABLY_API_KEY not set, skipping file_generated publish")
+            return False
+
+        client = AblyRealtime(api_key)
+        channel_name = f"ai-backend-generation:{thread_id}"
+        channel = client.channels.get(channel_name)
+
+        await channel.publish("file_generated", {
+            "file_path": file_path,
+            "content": content,
+            "content_size": len(content),
+            "task_index": task_index,
+            "total_tasks": total_tasks,
+            "progress": int(((task_index + 1) / total_tasks) * 100) if total_tasks else 0,
+            "message": f"Generated {file_path} ({task_index + 1}/{total_tasks})",
+        })
+        await client.close()
+
+        logger.info(f"Published file_generated for {file_path} ({task_index + 1}/{total_tasks})")
+        return True
+
+    except ImportError:
+        logger.warning("Ably package not installed, skipping file_generated publish")
+        return False
+    except Exception as e:
+        logger.error(f"Failed to publish file_generated: {e}")
+        return False
+
+
+async def stream_file_to_backend(
+    file_path: str,
+    content: str,
+    org_slug: str,
+    project_slug: str,
+    job_id: str,
+) -> bool:
+    """
+    Upload a single generated file to the backend immediately after generation.
+
+    This enables real-time file streaming instead of batch uploads, so the
+    frontend can display and preview files as they are created.
+
+    Args:
+        file_path: Relative path of the file (e.g., "app/page.tsx").
+        content: File content string.
+        org_slug: Organization slug for storage path.
+        project_slug: Project slug for storage path.
+        job_id: Generation job ID for tracking.
+
+    Returns:
+        True if upload succeeded.
+    """
+    backend_url = os.getenv("BACKEND_URL", "http://localhost:8080")
+    webhook_secret = os.getenv("FASTAPI_WEBHOOK_SECRET", "")
+
+    try:
+        import aiohttp
+
+        endpoint = f"{backend_url}/api/v1/agents/upload-file"
+        payload = {
+            "orgSlug": org_slug,
+            "projectSlug": project_slug,
+            "path": file_path,
+            "content": content,
+            "jobId": job_id,
+        }
+
+        headers = {
+            "Authorization": f"Bearer {webhook_secret}",
+            "Content-Type": "application/json",
+        }
+
+        async with aiohttp.ClientSession() as session:
+            async with session.post(endpoint, json=payload, headers=headers, timeout=30) as response:
+                if response.status == 200:
+                    logger.info(f"Streamed file to backend: {file_path}")
+                    return True
+                else:
+                    text = await response.text()
+                    logger.error(f"Failed to stream {file_path}: status {response.status} - {text}")
+                    return False
+
+    except ImportError:
+        logger.error("aiohttp not installed, cannot stream file")
+        return False
+    except Exception as e:
+        logger.error(f"Failed to stream file {file_path}: {e}")
+        return False
+
+
+# =============================================================================
 # Node: GenerationNode (The Builder)
 # =============================================================================
 
@@ -698,65 +818,85 @@ async def generation_node(
 ) -> Dict[str, Any]:
     """
     The Builder node - generates code for each task in the implementation plan.
-    
+
     This node iterates through the approved implementation plan and generates
     TypeScript/TSX code for each file. For delta/modify tasks, it includes
     the existing file content as context (Antigravity pattern).
-    
+
+    After each file is generated, it is:
+    1. Published to Ably as a `file_generated` event (for real-time frontend updates)
+    2. Uploaded individually to the backend (streaming, not batched)
+
     Args:
         state: Current agent state with implementation_plan and file_system.
         config: Runnable configuration.
-    
+
     Returns:
-        State update with populated file_system and build_logs.
+        State update with populated file_system, build_logs, and files_streamed count.
     """
     logger.info("generation_node: Starting code generation")
-    
+
     # Get mutable copies
     file_system = dict(state.get("file_system", {}))
     build_logs: List[str] = list(state.get("build_logs", []))
-    
+    files_streamed = state.get("files_streamed", 0)
+
     # Get the implementation plan
     plan = state.get("implementation_plan", [])
     if not plan:
         logger.warning("generation_node: Empty implementation plan")
         build_logs.append("Warning: No tasks in implementation plan")
-        return {"file_system": file_system, "build_logs": build_logs}
-    
+        return {"file_system": file_system, "build_logs": build_logs, "files_streamed": files_streamed}
+
     # Get LLM and tools
     llm = get_generation_llm()
     mcp = await get_mcp_wrapper()
     tools = mcp.get_tools()
-    
+
     # Bind tools to LLM
     llm_with_tools = llm.bind_tools(tools)
-    
+
     # Get manifest for context
     manifest = state.get("manifest", {})
     manifest_str = json.dumps(manifest, indent=2) if manifest else "No manifest provided"
-    
+
     # Get template files to exclude from generation
     template_files = state.get("template_files", {})
     template_paths = set(template_files.keys())
-    
+
+    # Get streaming context from state and config
+    org_slug = state.get("org_slug", "")
+    project_slug = state.get("project_slug", "")
+    thread_id = config.get("configurable", {}).get("thread_id", "")
+
+    # Count generatable tasks (excluding skips/deletes) for progress tracking
+    generatable_tasks = [
+        t for t in plan
+        if t.get("file_path")
+        and t.get("type", "create") != "delete"
+        and not (t.get("file_path") in template_paths and t.get("type", "create") == "create")
+    ]
+    total_generatable = len(generatable_tasks)
+    generated_index = 0
+
     # Process each task
     for i, task in enumerate(plan):
         task_id = task.get("id", f"task-{i}")
         task_type = task.get("type", "create")
         file_path = task.get("file_path", "")
         description = task.get("description", "")
-        
+
         if not file_path:
             logger.warning(f"generation_node: Task {task_id} has no file_path, skipping")
             build_logs.append(f"Skipped task {task_id}: no file path")
             continue
-        
+
         # Skip template files - they were already uploaded in Phase 1
         if file_path in template_paths and task_type == "create":
             logger.info(f"generation_node: Skipping template file {file_path} (already uploaded)")
             build_logs.append(f"Skipped: {file_path} (from template)")
             continue
-        
+
         if task_type == "delete":
             # Handle file deletion
             if file_path in file_system:
@@ -764,18 +904,18 @@ async def generation_node(
                 build_logs.append(f"Deleted: {file_path}")
                 logger.info(f"generation_node: Deleted {file_path}")
             continue
-        
+
         logger.info(f"generation_node: Processing {task_id} - {task_type} {file_path}")
-        
+
         # Build the prompt
         system_prompt = BUILDER_PROMPT
-        
+
         # Check if this is a modification (Antigravity delta mode)
         existing_content = ""
         if task_type == "modify" and file_path in file_system:
             existing_content = file_system[file_path]
             system_prompt += DELTA_GENERATION_INSTRUCTION
-        
+
         # Build user message
         user_content = f"""## Task
 {description}
@@ -788,7 +928,7 @@ async def generation_node(
 {manifest_str}
 ```
 """
-        
+
         if existing_content:
             user_content += f"""
 ## Current File Content (MODIFY this file)
@@ -796,25 +936,25 @@ async def generation_node(
 {existing_content}
 ```
 """
-        
+
         user_content += """
 ## Instructions
 Generate the complete file content. Return ONLY the code, no markdown formatting.
 """
-        
+
         # Check if we should use tools for this task
         use_tools = mcp.should_use_tools(task)
-        
+
         try:
             messages = [
                 SystemMessage(content=system_prompt),
                 HumanMessage(content=user_content),
             ]
-            
+
             if use_tools:
                 # First, query relevant documentation
                 logger.info(f"generation_node: Using tools for {task_id}")
-                
+
                 # Get relevant docs based on task
                 if "shadcn" in description.lower() or "component" in description.lower():
                     # Try to extract component name
@@ -825,19 +965,19 @@ Generate the complete file content. Return ONLY the code, no markdown formatting
                                 docs = await comp_tool._arun(comp)
                                 messages.append(HumanMessage(content=f"## Shadcn Component Reference\n{docs}"))
                             break
-                
+
                 if "server action" in description.lower() or "action" in description.lower():
                     docs_tool = next((t for t in tools if t.name == "search_nextjs_docs"), None)
                     if docs_tool:
                         docs = await docs_tool._arun("server actions", "server-actions")
                         messages.append(HumanMessage(content=f"## Next.js Documentation\n{docs}"))
-            
+
             # Generate the code
             response = await llm.ainvoke(messages, config=config)
-            
+
             # Extract code from response
             code = response.content.strip()
-            
+
             # Clean up potential markdown formatting
             if code.startswith("```"):
                 lines = code.split("\n")
@@ -847,22 +987,47 @@ Generate the complete file content. Return ONLY the code, no markdown formatting
                 if lines and lines[-1].strip() == "```":
                     lines = lines[:-1]
                 code = "\n".join(lines)
-            
+
             # Store in file system
             file_system[file_path] = code
             build_logs.append(f"Generated: {file_path} ({len(code)} bytes)")
             logger.info(f"generation_node: Generated {file_path}")
-            
+
+            # --- Streaming: publish + upload each file immediately ---
+            if thread_id:
+                await publish_file_generated(
+                    thread_id=thread_id,
+                    file_path=file_path,
+                    content=code,
+                    task_index=generated_index,
+                    total_tasks=total_generatable,
+                )
+
+            if org_slug and project_slug and thread_id:
+                uploaded = await stream_file_to_backend(
+                    file_path=file_path,
+                    content=code,
+                    org_slug=org_slug,
+                    project_slug=project_slug,
+                    job_id=thread_id,
+                )
+                if uploaded:
+                    files_streamed += 1
+                    build_logs.append(f"Streamed: {file_path}")
+
+            generated_index += 1
+
         except Exception as e:
             error_msg = f"Failed to generate {file_path}: {str(e)}"
             logger.error(f"generation_node: {error_msg}")
             build_logs.append(f"Error: {error_msg}")
-    
-    logger.info(f"generation_node: Completed. Generated {len(file_system)} files.")
-    
+
+    logger.info(f"generation_node: Completed. Generated {len(file_system)} files, streamed {files_streamed}.")
+
     return {
         "file_system": file_system,
         "build_logs": build_logs,
+        "files_streamed": files_streamed,
     }
 
 
@@ -940,72 +1105,118 @@ async def request_sas_token(container_name: str) -> Optional[Dict[str, Any]]:
 # =============================================================================
 
 async def persistence_node(
-
     state: AgentState,
     config: RunnableConfig,
 ) -> Dict[str, Any]:
     """
-    The Uploader node - uploads the virtual file system to Azure Blob Storage.
-    
-    This node takes all files from state['file_system'] and sends them
-    to the backend API for upload to Azure Blob Storage.
-    
+    The Uploader node - finalizes file uploads to Azure Blob Storage.
+
+    With streaming generation (Phase 1 v2.0), most files are already uploaded
+    individually during generation_node via stream_file_to_backend(). This node
+    now serves as a finalization step that:
+    1. Uploads any files that were NOT streamed (fallback for failures)
+    2. Publishes the upload_complete event to signal the frontend
+    3. Falls back to batch upload if no files were streamed
+
     Args:
-        state: Current agent state with file_system.
+        state: Current agent state with file_system and files_streamed.
         config: Runnable configuration with thread_id.
-    
+
     Returns:
         State update with build_ready flag and build_logs.
     """
-    logger.info("persistence_node: Starting file upload via backend proxy")
-    
+    logger.info("persistence_node: Starting finalization")
+
     # Get mutable build logs
     build_logs: List[str] = list(state.get("build_logs", []))
-    
+
     # Get the file system
     file_system = state.get("file_system", {})
     if not file_system:
         logger.warning("persistence_node: No files to upload")
         build_logs.append("Warning: No files in file system to upload")
         return {"build_ready": False, "build_logs": build_logs}
-    
+
     # Get org_slug and project_slug from state
     org_slug = state.get("org_slug")
     project_slug = state.get("project_slug")
-    
+
     if not org_slug or not project_slug:
         logger.error("persistence_node: Missing org_slug or project_slug in state")
         build_logs.append("Error: Missing organization or project slugs for file upload")
         return {"build_ready": False, "build_logs": build_logs}
-    
+
+    files_streamed = state.get("files_streamed", 0)
+    total_files = len(file_system)
+
+    # If all files were already streamed during generation, skip batch upload
+    if files_streamed >= total_files:
+        logger.info(
+            f"persistence_node: All {files_streamed} files already streamed. "
+            "Skipping batch upload, publishing upload_complete."
+        )
+        build_logs.append(f"All {files_streamed} files streamed during generation")
+
+        # Publish upload_complete via Ably
+        thread_id = config.get("configurable", {}).get("thread_id", "")
+        if thread_id:
+            try:
+                from ably import AblyRealtime
+
+                api_key = os.getenv("ABLY_API_KEY")
+                if api_key:
+                    client = AblyRealtime(api_key)
+                    channel = client.channels.get(f"ai-backend-generation:{thread_id}")
+                    await channel.publish("upload_complete", {
+                        "status": "upload_complete",
+                        "message": f"All {total_files} files uploaded",
+                        "file_count": total_files,
+                        "files": [{"path": p, "size": len(c)} for p, c in file_system.items()],
+                        "refresh_required": True,
+                        "organization_slug": org_slug,
+                        "project_slug": project_slug,
+                    })
+                    await client.close()
+                    logger.info("persistence_node: Published upload_complete")
+            except Exception as e:
+                logger.error(f"persistence_node: Failed to publish upload_complete: {e}")
+
+        return {"build_ready": True, "build_logs": build_logs}
+
+    # Fallback: batch upload files that weren't streamed
+    logger.info(
+        f"persistence_node: {files_streamed}/{total_files} files streamed. "
+        "Falling back to batch upload for remaining files."
+    )
+
     # Get backend URL
     backend_url = os.getenv("BACKEND_URL", "http://localhost:8080")
     webhook_secret = os.getenv("FASTAPI_WEBHOOK_SECRET", "")
-    
+
     # Prepare files array for backend
     files_payload = [
         {"path": path, "content": content}
         for path, content in file_system.items()
     ]
-    
+
     logger.info(f"persistence_node: Sending {len(files_payload)} files to backend for {org_slug}/{project_slug}")
     build_logs.append(f"Uploading {len(files_payload)} files to {org_slug}/{project_slug}")
-    
+
     try:
         import aiohttp
-        
+
         endpoint = f"{backend_url}/api/v1/agents/upload-files"
         payload = {
             "orgSlug": org_slug,
             "projectSlug": project_slug,
-            "files": files_payload
+            "files": files_payload,
         }
-        
+
         headers = {
             "Authorization": f"Bearer {webhook_secret}",
-            "Content-Type": "application/json"
+            "Content-Type": "application/json",
         }
-        
+
         async with aiohttp.ClientSession() as session:
             async with session.post(endpoint, json=payload, headers=headers, timeout=120) as response:
                 if response.status == 200:
@@ -1013,10 +1224,10 @@ async def persistence_node(
                     result = data.get("data", {})
                     uploaded = result.get("uploaded", 0)
                     total = result.get("total", len(files_payload))
-                    
+
                     logger.info(f"persistence_node: Uploaded {uploaded}/{total} files")
-                    build_logs.append(f"✅ Uploaded {uploaded}/{total} files to Azure")
-                    
+                    build_logs.append(f"Uploaded {uploaded}/{total} files to Azure")
+
                     # Log any failed files
                     results = result.get("results", [])
                     for r in results:
@@ -1024,7 +1235,7 @@ async def persistence_node(
                             error_msg = f"Failed: {r.get('path')} - {r.get('error')}"
                             logger.warning(error_msg)
                             build_logs.append(error_msg)
-                    
+
                     return {"build_ready": uploaded > 0, "build_logs": build_logs}
                 else:
                     text = await response.text()
@@ -1032,12 +1243,12 @@ async def persistence_node(
                     logger.error(error_msg)
                     build_logs.append(f"Error: {error_msg}")
                     return {"build_ready": False, "build_logs": build_logs}
-                    
+
     except ImportError:
         logger.error("persistence_node: aiohttp package not installed")
         build_logs.append("Error: aiohttp not installed. Run: pip install aiohttp")
         return {"build_ready": False, "build_logs": build_logs}
-        
+
     except Exception as e:
         error_msg = f"Backend upload failed: {str(e)}"
         logger.error(f"persistence_node: {error_msg}")

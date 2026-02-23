@@ -67,8 +67,14 @@ class AgentState(TypedDict):
             Set by the persistence_node after completing file uploads.
         build_status: Current build status from external container.
             Values: "pending", "success", "failed", "escalate"
+        files_streamed: Counter tracking how many files have been
+            individually streamed/uploaded during generation.
+        conversation_history: Prior conversation messages loaded from the
+            backend for context continuity across generation sessions.
+        project_context: Project-level metadata including prior generation
+            history, user preferences, and previously generated file lists.
     """
-    
+
     manifest: Dict[str, Any]
     user_prompt: str
     file_system: Dict[str, str]
@@ -83,6 +89,9 @@ class AgentState(TypedDict):
     template_files: Dict[str, str]
     org_slug: Optional[str]
     project_slug: Optional[str]
+    files_streamed: int
+    conversation_history: List[Dict[str, Any]]
+    project_context: Dict[str, Any]
 
 
 
@@ -568,4 +577,7 @@ def get_initial_state(
         template_files={},
         org_slug=org_slug,
         project_slug=project_slug,
+        files_streamed=0,
+        conversation_history=[],
+        project_context={},
     )

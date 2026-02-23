@@ -44,6 +44,9 @@ from agent.template_loader import (
     TEMPLATE_INFO,
 )
 
+# Import conversation memory
+from agent.memory import get_memory
+
 # Load environment variables
 load_dotenv()
 
@@ -206,36 +209,85 @@ async def plan_node(
 ) -> Dict[str, Any]:
     """
     The Architect node - generates implementation plans using GPT-4o.
-    
+
     This node analyzes the manifest and user prompt to create a detailed
     implementation plan. When file_system is not empty, it switches to
     DELTA mode to preserve existing work (Antigravity pattern).
-    
+
+    Before planning, it loads conversation memory from the backend to
+    provide context from prior generations and user preferences.
+
     Args:
         state: Current agent state containing manifest, user_prompt, file_system.
         config: Runnable configuration with thread_id and callbacks.
-    
+
     Returns:
-        State update with implementation_plan.
+        State update with implementation_plan, conversation_history, project_context.
     """
     logger.info("plan_node: Starting plan generation")
-    
+
     # Get the LLM
     llm = get_planning_llm()
-    
+
     # Build the system prompt
     system_prompt = ARCHITECT_PROMPT
-    
+
     # Check if this is an update request (Antigravity pattern)
     if state.get("file_system"):
         logger.info("plan_node: DELTA mode - existing files detected")
         system_prompt += DELTA_PLANNING_INSTRUCTION
-    
+
+    # --- Load conversation memory ---
+    memory = get_memory()
+    org_slug = state.get("org_slug", "")
+    project_slug = state.get("project_slug", "")
+    thread_id = config.get("configurable", {}).get("thread_id", "")
+
+    conversation_history = state.get("conversation_history", [])
+    project_context = state.get("project_context", {})
+
+    # Load project context if not already loaded
+    if not project_context and org_slug and project_slug:
+        try:
+            project_context = await memory.load_project_context(org_slug, project_slug)
+            logger.info(f"plan_node: Loaded project context with {len(project_context.get('generations', []))} prior generations")
+        except Exception as e:
+            logger.warning(f"plan_node: Failed to load project context: {e}")
+
+    # Load conversation history if not already loaded
+    if not conversation_history and thread_id:
+        try:
+            conversation_history = await memory.load_history(thread_id)
+            logger.info(f"plan_node: Loaded {len(conversation_history)} history messages")
+        except Exception as e:
+            logger.warning(f"plan_node: Failed to load conversation history: {e}")
+
+    # Summarize conversation if needed
+    conversation_summary = ""
+    if conversation_history:
+        try:
+            conversation_summary = await memory.summarize_context(conversation_history)
+        except Exception as e:
+            logger.warning(f"plan_node: Failed to summarize context: {e}")
+
+    # Build context prompt section from memory
+    context_prompt = memory.build_context_prompt(project_context, conversation_summary)
+
     # Build the user message with context
     manifest_str = json.dumps(state.get("manifest", {}), indent=2)
     file_system = state.get("file_system", {})
-    
-    user_content = f"""## Backend API Manifest
+
+    user_content = ""
+
+    # Inject memory context first if available
+    if context_prompt:
+        user_content += f"""{context_prompt}
+
+---
+
+"""
+
+    user_content += f"""## Backend API Manifest
 ```json
 {manifest_str}
 ```
@@ -243,7 +295,7 @@ async def plan_node(
 ## User Requirements
 {state.get("user_prompt", "No specific requirements provided.")}
 """
-    
+
     # Add existing files context if in delta mode
     if file_system:
         existing_files = "\n".join(f"- {path}" for path in file_system.keys())
@@ -254,44 +306,45 @@ async def plan_node(
     else:
         # No existing files - include template info so planner knows what's available
         user_content += get_template_context_for_planner()
-    
+
     user_content += """
 ## Task
 Generate the implementation plan as a JSON array. Return ONLY the JSON array, no markdown formatting.
 """
-    
+
     # Prepare messages
     messages = [
         SystemMessage(content=system_prompt),
         HumanMessage(content=user_content),
     ]
-    
+
     # Invoke the LLM
     try:
         response = await llm.ainvoke(messages, config=config)
-        
+
         # Parse the JSON response
         content = response.content.strip()
-        
+
         # Handle potential markdown code blocks
         if content.startswith("```"):
             content = content.split("```")[1]
             if content.startswith("json"):
                 content = content[4:]
             content = content.strip()
-        
+
         implementation_plan = json.loads(content)
-        
+
         logger.info(f"plan_node: Generated {len(implementation_plan)} tasks")
-        
+
         return {
             "implementation_plan": implementation_plan,
             "iteration_count": state.get("iteration_count", 0) + 1,
+            "conversation_history": conversation_history,
+            "project_context": project_context,
         }
-        
+
     except json.JSONDecodeError as e:
         logger.error(f"plan_node: Failed to parse LLM response as JSON: {e}")
-        # Return a fallback plan indicating the error
         return {
             "implementation_plan": [{
                 "id": "error-1",
@@ -302,6 +355,8 @@ Generate the implementation plan as a JSON array. Return ONLY the JSON array, no
                 "priority": 0,
             }],
             "iteration_count": state.get("iteration_count", 0) + 1,
+            "conversation_history": conversation_history,
+            "project_context": project_context,
         }
     except Exception as e:
         logger.error(f"plan_node: Unexpected error: {e}")
@@ -615,6 +670,9 @@ async def run_antigravity_agent(
         "approved": False,
         "build_ready": False,
         "build_status": "pending",
+        "files_streamed": 0,
+        "conversation_history": [],
+        "project_context": {},
     }
     
     # Get config

@@ -62,6 +62,8 @@ from agent.execution_layer import (
     persistence_node,
     list_generated_files,
     preview_generation,
+    publish_file_generated,
+    stream_file_to_backend,
 )
 
 # Phase 4: Reflexion Loop
@@ -75,6 +77,12 @@ from agent.reflexion import (
     publish_to_ably,
     get_debugger_tools,
     format_error_summary,
+)
+
+# Phase 5: Conversation Memory
+from agent.memory import (
+    ConversationMemory,
+    get_memory,
 )
 
 # Template Loader
@@ -112,6 +120,8 @@ __all__ = [
     "persistence_node",
     "list_generated_files",
     "preview_generation",
+    "publish_file_generated",
+    "stream_file_to_backend",
     # Phase 4: Reflexion Loop
     "DEBUGGER_PROMPT",
     "MAX_REFLEXION_ITERATIONS",
@@ -122,6 +132,9 @@ __all__ = [
     "publish_to_ably",
     "get_debugger_tools",
     "format_error_summary",
+    # Phase 5: Conversation Memory
+    "ConversationMemory",
+    "get_memory",
 ]
 
-__version__ = "0.4.0"
+__version__ = "0.5.0"
