@@ -92,6 +92,12 @@ class AgentState(TypedDict):
     files_streamed: int
     conversation_history: List[Dict[str, Any]]
     project_context: Dict[str, Any]
+    # Phase 5: Code quality review results
+    quality_summary: Dict[str, Any]
+    # Phase 3: modification graph state
+    modification_analysis: Dict[str, Any]
+    modification_targets: List[Dict[str, Any]]
+    delta_mode: bool
 
 
 
@@ -580,4 +586,8 @@ def get_initial_state(
         files_streamed=0,
         conversation_history=[],
         project_context={},
+        quality_summary={},
+        modification_analysis={},
+        modification_targets=[],
+        delta_mode=False,
     )

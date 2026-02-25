@@ -60,6 +60,7 @@ from agent.execution_layer import (
     get_mcp_wrapper,
     generation_node,
     persistence_node,
+    code_review_node,
     list_generated_files,
     preview_generation,
     publish_file_generated,
@@ -77,6 +78,32 @@ from agent.reflexion import (
     publish_to_ably,
     get_debugger_tools,
     format_error_summary,
+    categorize_errors,
+    get_progressive_strategy,
+    build_categorized_prompt,
+    ERROR_PATTERNS,
+    CATEGORY_PROMPTS,
+    PROGRESSIVE_STRATEGIES,
+)
+
+# Phase 5: Code Quality
+from agent.code_quality import (
+    CodeReviewer,
+    QualityIssue,
+    FileReviewResult,
+    ReviewSummary,
+)
+
+# Phase 3: Smart Modifications
+from agent.codebase_analyzer import (
+    CodebaseAnalyzer,
+    ComponentInfo,
+    ImportGraph,
+)
+
+from agent.diff_engine import (
+    DiffGenerator,
+    TargetedModifier,
 )
 
 # Phase 5: Conversation Memory
@@ -118,10 +145,16 @@ __all__ = [
     "get_mcp_wrapper",
     "generation_node",
     "persistence_node",
+    "code_review_node",
     "list_generated_files",
     "preview_generation",
     "publish_file_generated",
     "stream_file_to_backend",
+    # Phase 5: Code Quality
+    "CodeReviewer",
+    "QualityIssue",
+    "FileReviewResult",
+    "ReviewSummary",
     # Phase 4: Reflexion Loop
     "DEBUGGER_PROMPT",
     "MAX_REFLEXION_ITERATIONS",
@@ -132,9 +165,21 @@ __all__ = [
     "publish_to_ably",
     "get_debugger_tools",
     "format_error_summary",
+    "categorize_errors",
+    "get_progressive_strategy",
+    "build_categorized_prompt",
+    "ERROR_PATTERNS",
+    "CATEGORY_PROMPTS",
+    "PROGRESSIVE_STRATEGIES",
+    # Phase 3: Smart Modifications
+    "CodebaseAnalyzer",
+    "ComponentInfo",
+    "ImportGraph",
+    "DiffGenerator",
+    "TargetedModifier",
     # Phase 5: Conversation Memory
     "ConversationMemory",
     "get_memory",
 ]
 
-__version__ = "0.5.0"
+__version__ = "0.7.0"

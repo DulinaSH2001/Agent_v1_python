@@ -30,8 +30,9 @@ from agent.state_engine import AgentState
 # Load environment variables
 load_dotenv()
 
-# Import code validation
+# Import code validation and analysis
 from agent.code_validator import validate_file
+from agent.codebase_analyzer import CodebaseAnalyzer
 
 # Configure logging
 logger = logging.getLogger(__name__)
@@ -41,15 +42,15 @@ logger = logging.getLogger(__name__)
 # System Prompts for Code Generation
 # =============================================================================
 
-BUILDER_PROMPT = """You are the Builder, a senior frontend engineer generating production-ready Next.js 16 code.
+BUILDER_PROMPT = """You are the Builder, a senior frontend engineer generating production-ready Next.js 15 code.
 
 ## Your Role
-Generate TypeScript/TSX code for Next.js 16 applications based on:
+Generate TypeScript/TSX code for Next.js 15 applications based on:
 1. The implementation task description
 2. Backend API manifest for data types
 3. Existing file content (for modifications)
 
-## STRICT Next.js 16 Compliance Rules
+## STRICT Next.js 15 Compliance Rules
 
 ### 1. Schema Validation
 Always use Zod for schema validation:
@@ -74,15 +75,17 @@ export default async function DashboardPage() {
 }
 ```
 
-### 3. Data Caching
-Use 'use cache' directive for expensive operations:
+### 3. Data Fetching & Caching
+Use fetch with cache options in Server Components:
 ```typescript
-async function getExpensiveData() {
-  'use cache';
-  // Expensive fetch or computation
-  return await db.query(...);
-}
+// Static (cached forever)
+const data = await fetch('https://api.example.com/data', { cache: 'force-cache' });
+// Revalidate every 60 seconds (ISR)
+const data = await fetch('https://api.example.com/data', { next: { revalidate: 60 } });
+// Dynamic (no cache)
+const data = await fetch('https://api.example.com/data', { cache: 'no-store' });
 ```
+Do NOT use `'use cache'` — it is an experimental directive that will cause build failures.
 
 ### 4. Server Actions
 Define in lib/actions.ts with 'use server':
@@ -106,27 +109,123 @@ export async function createUser(formData: FormData) {
 ```
 
 ### 5. Shadcn UI Components
-Import from @/components/ui:
+ONLY import from these EXACT files that exist in @/components/ui:
 ```typescript
 import { Button } from '@/components/ui/button';
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
+import { Card, CardContent, CardHeader, CardTitle, CardDescription, CardFooter } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
+import { Badge } from '@/components/ui/badge';
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog';
+import { Skeleton } from '@/components/ui/skeleton';
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 ```
 
+NEVER import from `@/components/ui/header`, `@/components/ui/footer`, `@/components/ui/navbar`,
+`@/components/ui/sidebar`, `@/components/ui/dropdown-menu`, `@/components/ui/select`,
+`@/components/ui/tabs`, `@/components/ui/toast`, or any other path not listed above.
+If you need a header, footer, or nav, create them as custom components in `components/`.
+
 ### 6. TypeScript Strict Mode
-- Never use `any` type
+- Prefer `unknown` over `any`; never use `any` for props or return types
 - Define explicit interfaces for props
 - Use proper generic types
 
 ### 7. File Structure
 - Pages: `app/[route]/page.tsx`
 - Layouts: `app/[route]/layout.tsx`
+- Error boundaries: `app/[route]/error.tsx` (MUST be 'use client')
+- Loading UI: `app/[route]/loading.tsx` (server component, no directive needed)
 - Components: `components/[name].tsx`
 - UI Components: `components/ui/[name].tsx`
 - Actions: `lib/actions.ts` or `lib/actions/[domain].ts`
 - Types: `types/[domain].ts`
 - Utilities: `lib/utils.ts`
+
+### 8. Required patterns for special files
+
+**error.tsx** — MUST use exactly this pattern:
+```typescript
+'use client';
+
+import { useEffect } from 'react';
+import { Button } from '@/components/ui/button';
+
+interface ErrorProps {
+  error: Error & { digest?: string };
+  reset: () => void;
+}
+
+export default function Error({ error, reset }: ErrorProps) {
+  useEffect(() => {
+    console.error(error);
+  }, [error]);
+
+  return (
+    <div className="flex flex-col items-center justify-center min-h-[400px] gap-4">
+      <h2 className="text-xl font-semibold">Something went wrong</h2>
+      <Button onClick={reset}>Try again</Button>
+    </div>
+  );
+}
+```
+
+**loading.tsx** — MUST use exactly this pattern (no 'use client'):
+```typescript
+import { Skeleton } from '@/components/ui/skeleton';
+
+export default function Loading() {
+  return (
+    <div className="space-y-4 p-6">
+      <Skeleton className="h-8 w-48" />
+      <Skeleton className="h-4 w-full" />
+      <Skeleton className="h-4 w-3/4" />
+    </div>
+  );
+}
+```
+
+### 9. Caching
+Do NOT use `'use cache'` directive — it is experimental and will break the build.
+Use `fetch` with `cache` option instead:
+```typescript
+const data = await fetch('/api/data', { cache: 'force-cache' }); // static
+const data = await fetch('/api/data', { next: { revalidate: 60 } }); // ISR
+const data = await fetch('/api/data', { cache: 'no-store' }); // dynamic
+```
+
+### 10. PROTECTED FILES — DO NOT GENERATE
+These files already exist in the template and are managed outside this generation:
+- `app/layout.tsx` — NEVER modify or regenerate
+- `app/page.tsx` — NEVER modify or regenerate (or generate custom pages in `app/[route]/page.tsx` instead)
+- `styles/globals.css` — NEVER modify
+- `tailwind.config.js` — NEVER modify
+- `next.config.js` — NEVER modify
+- `tsconfig.json` — NEVER modify
+
+If you need a home page, create `app/dashboard/page.tsx` or other route-specific pages.
+If you need layout changes beyond the root, create nested `app/[route]/layout.tsx` for specific routes.
+
+### 11. Component Usage Rules — CRITICAL
+Before using ANY custom component:
+1. **Check the "Available Components" section** provided below the task description
+2. **Verify it exists** in the list with exact name
+3. **Match required props exactly** — do NOT invent prop names or types
+4. **Never hallucinate components** — if a component is not listed, do NOT use it
+
+Common mistake example:
+```typescript
+// ❌ WRONG - Component not in inventory, or props are wrong
+<Header links={...} branding={...} />
+
+// ✅ CORRECT - Use only components from the available list with correct props
+// If Header is not listed, create it in components/Header.tsx first
+```
+
+If you need a component that is NOT in the "Available Components" list:
+- Option A: Create it in `components/[ComponentName].tsx`
+- Option B: Use a Shadcn UI component that IS available
+- Option C: Use simple HTML elements
 
 ## Output Format
 Return ONLY the TypeScript/TSX code. No markdown formatting, no explanations.
@@ -174,7 +273,7 @@ class MockNextjsDocsTool(BaseTool):
     """Mock tool for searching Next.js documentation."""
     
     name: str = "search_nextjs_docs"
-    description: str = "Search Next.js 16 documentation for patterns, APIs, and best practices"
+    description: str = "Search Next.js 15 documentation for patterns, APIs, and best practices"
     args_schema: type[BaseModel] = SearchNextjsDocsInput
     
     def _run(self, query: str, topic: Optional[str] = None) -> str:
@@ -189,7 +288,7 @@ class MockNextjsDocsTool(BaseTool):
         """Get mock documentation based on query."""
         docs = {
             "server-actions": """
-# Server Actions in Next.js 16
+# Server Actions in Next.js 15
 
 Server Actions are async functions that execute on the server. They can be used in forms.
 
@@ -219,7 +318,7 @@ export default function Form() {
 ```
 """,
             "routing": """
-# App Router in Next.js 16
+# App Router in Next.js 15
 
 Use the app/ directory for routing:
 - `app/page.tsx` - Home page (/)
@@ -228,39 +327,41 @@ Use the app/ directory for routing:
 - `app/(group)/page.tsx` - Route groups
 """,
             "data-fetching": """
-# Data Fetching in Next.js 16
+# Data Fetching in Next.js 15
 
 Server Components can fetch data directly:
 
 ```typescript
 export default async function Page() {
-  const data = await fetch('https://api.example.com/data');
-  return <div>{data}</div>;
+  const res = await fetch('https://api.example.com/data', { cache: 'no-store' });
+  const data = await res.json();
+  return <div>{JSON.stringify(data)}</div>;
 }
 ```
 
-Use 'use cache' for expensive operations:
+Use fetch cache options for performance:
 ```typescript
-async function getData() {
-  'use cache';
-  return await expensiveOperation();
-}
+// Static: cached indefinitely
+const res = await fetch(url, { cache: 'force-cache' });
+// ISR: revalidate every 60s
+const res = await fetch(url, { next: { revalidate: 60 } });
+// Dynamic: always fresh
+const res = await fetch(url, { cache: 'no-store' });
 ```
 """,
             "caching": """
-# Caching in Next.js 16
+# Caching in Next.js 15
 
-Use the 'use cache' directive:
+Use fetch cache options — do NOT use `'use cache'` directive (experimental, breaks builds):
 
 ```typescript
-async function getCachedData() {
-  'use cache';
-  const res = await fetch('https://api.example.com/data');
-  return res.json();
-}
+// Static caching
+const res = await fetch('https://api.example.com/data', { cache: 'force-cache' });
+// Time-based revalidation (ISR)
+const res = await fetch('https://api.example.com/data', { next: { revalidate: 3600 } });
+// Tag-based revalidation
+const res = await fetch('https://api.example.com/data', { next: { tags: ['products'] } });
 ```
-
-Options: revalidate, tags
 """,
         }
         
@@ -272,7 +373,7 @@ Options: revalidate, tags
             if query.lower() in key or query.lower() in doc.lower():
                 return doc
         
-        return f"No specific documentation found for '{query}'. Use standard Next.js 16 patterns."
+        return f"No specific documentation found for '{query}'. Use standard Next.js 15 patterns."
 
 
 class MockShadcnComponentTool(BaseTool):
@@ -809,6 +910,161 @@ async def stream_file_to_backend(
 
 
 # =============================================================================
+# Phase 3: Modification Nodes
+# =============================================================================
+
+async def modification_analysis_node(
+    state: AgentState,
+    config: RunnableConfig,
+) -> Dict[str, Any]:
+    """
+    Analyze which files are affected by a modification request.
+
+    Uses CodebaseAnalyzer to find target files and build dependency impact.
+    Injects affected files and dependency analysis into the state for planning.
+    """
+    from agent.codebase_analyzer import CodebaseAnalyzer
+
+    logger.info("=== Modification Analysis Node ===")
+
+    config_data = config.get("configurable", {}) if config else {}
+    org_slug = config_data.get("org_slug", "")
+    project_slug = config_data.get("project_slug", "")
+
+    try:
+        # Initialize analyzer
+        analyzer = CodebaseAnalyzer()
+
+        # Analyze existing file system (from state)
+        if state.get("file_system"):
+            analyzer.analyze_files(state["file_system"])
+
+            # Find affected files based on modification request
+            modification_request = state.get("user_message", state.get("query", ""))
+            affected_files = analyzer.find_affected_files(modification_request, state["file_system"])
+
+            # Get codebase summary for LLM context
+            codebase_summary = analyzer.get_file_summary()
+
+            # Analyze impact of each affected file
+            file_impacts = {
+                file_path: analyzer.analyze_file_impact(file_path)
+                for file_path in affected_files
+            }
+
+            logger.info(f"Found {len(affected_files)} affected files")
+            logger.info(f"File impacts: {json.dumps(file_impacts, default=str, indent=2)}")
+
+            # Publish progress to Ably
+            if state.get("thread_id"):
+                publish_to_ably(
+                    thread_id=state["thread_id"],
+                    event_name="modification_analysis",
+                    data={
+                        "affected_files": affected_files,
+                        "file_count": len(affected_files),
+                        "message": f"Analyzing {len(affected_files)} files for modification"
+                    }
+                )
+
+            return {
+                "modification_analysis": {
+                    "affected_files": affected_files,
+                    "file_impacts": file_impacts,
+                    "codebase_summary": codebase_summary,
+                    "analyzer_state": analyzer.to_dict(),
+                }
+            }
+        else:
+            logger.warning("No file system in state for modification analysis")
+            return {
+                "modification_analysis": {
+                    "affected_files": [],
+                    "file_impacts": {},
+                    "codebase_summary": "No codebase to analyze",
+                    "analyzer_state": {},
+                }
+            }
+
+    except Exception as e:
+        logger.error(f"Modification analysis failed: {e}", exc_info=True)
+        return {
+            "modification_analysis": {
+                "affected_files": [],
+                "file_impacts": {},
+                "error": str(e),
+            }
+        }
+
+
+async def modification_planning_node(
+    state: AgentState,
+    config: RunnableConfig,
+) -> Dict[str, Any]:
+    """
+    Create a targeted modification plan based on analysis.
+
+    Takes the affected files and creates a focused modification plan
+    that instructs the generator to only modify specific sections.
+    """
+    logger.info("=== Modification Planning Node ===")
+
+    config_data = config.get("configurable", {}) if config else {}
+    org_slug = config_data.get("org_slug", "")
+    project_slug = config_data.get("project_slug", "")
+
+    try:
+        analysis = state.get("modification_analysis", {})
+        affected_files = analysis.get("affected_files", [])
+
+        if not affected_files:
+            logger.warning("No affected files to plan modifications for")
+            return {
+                "delta_mode": True,
+                "modification_targets": [],
+            }
+
+        # Build modification instruction for the generator
+        modification_targets = []
+        for file_path in affected_files[:5]:  # Limit to top 5 to avoid token explosion
+            file_impact = analysis.get("file_impacts", {}).get(file_path, {})
+            scope = file_impact.get("impact_scope", 0)
+
+            modification_targets.append({
+                "file_path": file_path,
+                "operation": "modify",  # vs "create" or "delete"
+                "scope": scope,
+                "dependencies": file_impact.get("imported_by", [])[:3],  # Top 3 dependents
+            })
+
+        logger.info(f"Created modification targets for {len(modification_targets)} files")
+
+        # Publish plan to Ably
+        if state.get("thread_id"):
+            publish_to_ably(
+                thread_id=state["thread_id"],
+                event_name="modification_plan_ready",
+                data={
+                    "targets": modification_targets,
+                    "message": f"Modification plan ready for {len(modification_targets)} files"
+                }
+            )
+
+        return {
+            "delta_mode": True,
+            "modification_targets": modification_targets,
+        }
+
+    except Exception as e:
+        logger.error(f"Modification planning failed: {e}", exc_info=True)
+        return {
+            "delta_mode": True,
+            "modification_targets": [],
+            "error": str(e),
+        }
+
+
+# =============================================================================
 # Node: GenerationNode (The Builder)
 # =============================================================================
 
@@ -859,6 +1115,18 @@ async def generation_node(
     # Get manifest for context
     manifest = state.get("manifest", {})
     manifest_str = json.dumps(manifest, indent=2) if manifest else "No manifest provided"
+
+    # Extract component signatures from existing codebase
+    component_signatures = ""
+    try:
+        analyzer = CodebaseAnalyzer()
+        analyzer.analyze_files(file_system)
+        component_signatures = analyzer.get_component_signature_string()
+        if component_signatures and "No custom components" not in component_signatures:
+            logger.info(f"generation_node: Extracted {len(analyzer.components)} component signatures")
+    except Exception as e:
+        logger.warning(f"generation_node: Could not extract component signatures: {e}")
+        component_signatures = ""
 
     # Get template files to exclude from generation
     template_files = state.get("template_files", {})
@@ -929,6 +1197,12 @@ async def generation_node(
 ```
 """
 
+        # Add component inventory if available
+        if component_signatures:
+            user_content += f"""
+{component_signatures}
+"""
+
         if existing_content:
             user_content += f"""
 ## Current File Content (MODIFY this file)
@@ -940,6 +1214,8 @@ async def generation_node(
         user_content += """
 ## Instructions
 Generate the complete file content. Return ONLY the code, no markdown formatting.
+When using components, always verify the required props from the "Available Components" section above.
+Never invent component prop signatures - only use components as defined.
 """
 
         # Check if we should use tools for this task
@@ -1098,6 +1374,100 @@ async def request_sas_token(container_name: str) -> Optional[Dict[str, Any]]:
     except Exception as e:
         logger.error(f"Failed to request SAS token: {e}")
         return None
+
+
+# =============================================================================
+# Phase 5: Code Quality Review Node
+# =============================================================================
+
+async def code_review_node(
+    state: AgentState,
+    config: RunnableConfig,
+) -> Dict[str, Any]:
+    """
+    Code quality review node — runs between generation and persistence.
+
+    Performs rule-based static analysis on all generated files:
+    - Checks for missing 'use client' / 'use server' directives
+    - Validates Shadcn import paths
+    - Flags accessibility issues (missing alt, aria-label)
+    - Detects HTML nesting violations
+    - Identifies large barrel imports
+    - Auto-fixes simple violations in-place
+
+    Publishes a quality summary to Ably so the frontend can display it.
+    Any auto-fixed files are updated in the state's file_system before upload.
+
+    Args:
+        state: Current agent state with file_system.
+        config: Runnable configuration.
+
+    Returns:
+        State update with (possibly patched) file_system and quality_summary.
+    """
+    from agent.code_quality import CodeReviewer
+
+    logger.info("code_review_node: Running code quality checks")
+
+    file_system = dict(state.get("file_system", {}))
+    thread_id = config.get("configurable", {}).get("thread_id", "") if config else ""
+    build_logs = list(state.get("build_logs", []))
+
+    if not file_system:
+        logger.warning("code_review_node: No files to review")
+        return {}
+
+    try:
+        reviewer = CodeReviewer()
+        # auto_fix=True mutates file_system in-place with corrections
+        summary = reviewer.review_file_system(file_system, auto_fix=True)
+
+        logger.info(
+            f"code_review_node: Review complete — "
+            f"score={summary.quality_score}/100, "
+            f"errors={summary.total_errors}, warnings={summary.total_warnings}, "
+            f"auto_fixes={summary.auto_fixes_applied}"
+        )
+
+        # Publish quality summary to Ably
+        if thread_id:
+            from agent.reflexion import publish_to_ably
+            import os as _os
+            channel_prefix = _os.getenv("ABLY_CHANNEL_PREFIX", "ai-backend-generation")
+            await publish_to_ably(
+                f"{channel_prefix}:{thread_id}",
+                {
+                    "status": "quality_review",
+                    "quality_score": summary.quality_score,
+                    "total_errors": summary.total_errors,
+                    "total_warnings": summary.total_warnings,
+                    "auto_fixes_applied": summary.auto_fixes_applied,
+                    "files_with_issues": summary.files_with_issues,
+                    "message": (
+                        f"Code quality: {summary.quality_score}/100 — "
+                        f"{summary.total_errors} errors, {summary.total_warnings} warnings"
+                        + (f", {summary.auto_fixes_applied} auto-fixed" if summary.auto_fixes_applied else "")
+                    ),
+                }
+            )
+
+        # Add quality log entry
+        build_logs.append(
+            f"Code quality review: score={summary.quality_score}/100, "
+            f"errors={summary.total_errors}, warnings={summary.total_warnings}, "
+            f"auto_fixes={summary.auto_fixes_applied}"
+        )
+
+        return {
+            "file_system": file_system,  # possibly mutated with auto-fixes
+            "build_logs": build_logs,
+            "quality_summary": summary.to_dict(),
+        }
+
+    except Exception as e:
+        logger.error(f"code_review_node: Quality review failed: {e}", exc_info=True)
+        build_logs.append(f"Code quality review error: {e}")
+        return {"build_logs": build_logs}
 
 
 # =============================================================================

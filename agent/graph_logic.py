@@ -58,14 +58,14 @@ logger = logging.getLogger(__name__)
 # System Prompts
 # =============================================================================
 
-ARCHITECT_PROMPT = """You are the Architect, a senior frontend engineer specializing in Next.js 16 applications.
+ARCHITECT_PROMPT = """You are the Architect, a senior frontend engineer specializing in Next.js 15 applications.
 
 ## Your Role
 Generate detailed, actionable implementation plans for Next.js projects based on:
 1. A backend API manifest (endpoints, schemas, authentication)
 2. User requirements for styling and functionality
 
-## STRICT Next.js 16 Rules
+## STRICT Next.js 15 Rules
 You MUST follow these rules without exception:
 
 1. **App Router Only**: Use the `app/` directory structure. Never use `pages/`.
@@ -84,19 +84,35 @@ You MUST follow these rules without exception:
      export async function createUser(formData: FormData) { ... }
      ```
 
-3. **Shadcn UI Components**: Use Shadcn UI component names:
-   - Button, Card, Input, Label, Dialog, Sheet
-   - Table, Tabs, Badge, Avatar, Dropdown
-   - Form (with react-hook-form + zod)
-   - Toast (via sonner)
+3. **Shadcn UI Components**: ONLY these components exist in `@/components/ui/`:
+   - `button`, `card`, `input`, `label`, `badge`, `dialog`, `skeleton`, `table`
+   - Do NOT plan to use: sheet, tabs, avatar, dropdown-menu, select, toast, navbar, header, footer, sidebar
+   - For header/footer/nav: plan as custom components in `components/` not `components/ui/`
+   - Toast notifications: use `sonner` directly — `import { toast } from 'sonner'`
 
 4. **TypeScript Strict Mode**: All files must use TypeScript with strict types.
 
 5. **File Naming Conventions**:
-   - Components: `components/ui/*.tsx` (Shadcn), `components/*.tsx` (custom)
+   - Components: `components/ui/*.tsx` (Shadcn only), `components/*.tsx` (custom)
    - Actions: `lib/actions.ts` or `lib/actions/*.ts`
    - Types: `types/*.ts` or co-located `*.types.ts`
    - Utilities: `lib/utils.ts`
+
+6. **Special file requirements**:
+   - `error.tsx` files MUST have `'use client'` at the top and accept `{ error, reset }` props
+   - `loading.tsx` files must NOT have `'use client'`
+   - Do NOT use `'use cache'` directive anywhere — use fetch cache options instead
+
+7. **PROTECTED FILES — NEVER PLAN TO MODIFY**:
+   - `app/layout.tsx` — PROTECTED (root layout exists)
+   - `app/page.tsx` — PROTECTED (create custom pages in `app/[route]/page.tsx` instead)
+   - `styles/globals.css` — PROTECTED
+   - `tailwind.config.js` — PROTECTED
+   - `next.config.js` — PROTECTED
+   - `tsconfig.json` — PROTECTED
+
+   If you need custom pages, plan pages in subdirectories like `app/dashboard/page.tsx`.
+   If you need custom layouts for routes, create `app/[route]/layout.tsx` for specific route groups.
 
 ## Output Format
 Return a JSON array of implementation tasks:
@@ -447,6 +463,7 @@ async def approval_node(
 from agent.execution_layer import (
     generation_node,
     persistence_node,
+    code_review_node,
     BUILDER_PROMPT,
     get_mcp_wrapper,
     list_generated_files,
@@ -541,9 +558,10 @@ def create_antigravity_graph(
     builder.add_node("template_selection", template_selection_node)
     builder.add_node("planner", plan_node)
     builder.add_node("generator", generation_node)
+    builder.add_node("code_review", code_review_node)       # Phase 5: Quality review
     builder.add_node("template_upload", template_upload_node)  # Phase 1: Upload template
     builder.add_node("persistence", persistence_node)  # Phase 2: Upload custom files
-    
+
     if skip_approval:
         # Simple flow: template_selection -> planner -> generator (no HITL)
         logger.info("Building graph with skip_approval=True (no HITL)")
@@ -557,22 +575,23 @@ def create_antigravity_graph(
         builder.set_entry_point("template_selection")
         builder.add_edge("template_selection", "planner")
         builder.add_edge("planner", "approval")
-        
+
         # Conditional edge from approval
         builder.add_conditional_edges(
             "approval",
             check_approval,
             {
-                 "template_upload": "template_upload",  # Phase 1: Upload template after approval
+                "template_upload": "template_upload",  # Phase 1: Upload template after approval
                 "planner": "planner",
             }
         )
-        
+
         # Chain: template_upload -> generator (Phase 2)
         builder.add_edge("template_upload", "generator")
-    
-    # Chain: generator -> persistence
-    builder.add_edge("generator", "persistence")
+
+    # Phase 5: generator -> code_review -> persistence
+    builder.add_edge("generator", "code_review")
+    builder.add_edge("code_review", "persistence")
     
     if enable_reflexion:
         # Add reflexion nodes
@@ -609,6 +628,81 @@ def create_antigravity_graph(
         return builder.compile(checkpointer=checkpointer)
     else:
         logger.info("Compiling graph without checkpointer (no persistence)")
+        return builder.compile()
+
+
+# =============================================================================
+# Phase 3: Modification Graph (Lightweight flow for targeted changes)
+# =============================================================================
+
+def create_modification_graph(
+    checkpointer: Optional[Any] = None,
+    enable_reflexion: bool = True,
+) -> Any:
+    """
+    Create a lightweight graph for code modifications without regenerating everything.
+
+    Flow:
+    1. modification_analysis_node - Analyze which files are affected
+    2. modification_planning_node - Create targeted modification plan
+    3. generation_node - Generate only modified content (delta mode)
+    4. persistence_node - Upload modified files
+    5. Conditional: build -> end/reflexion
+
+    Args:
+        checkpointer: Optional checkpointer for persistence.
+        enable_reflexion: Whether to include error recovery loop. Defaults to True.
+
+    Returns:
+        Compiled modification graph.
+    """
+    # Import here to avoid circular dependency
+    from agent.execution_layer import modification_analysis_node, modification_planning_node
+    from agent.execution_layer import generation_node, persistence_node, code_review_node
+    from agent.reflexion import reflexion_node, escalation_node, should_fix
+
+    builder = StateGraph(AgentState)
+
+    # Add modification-specific nodes
+    builder.add_node("analysis", modification_analysis_node)
+    builder.add_node("modification_plan", modification_planning_node)
+    builder.add_node("generator", generation_node)
+    builder.add_node("code_review", code_review_node)   # Phase 5: quality check
+    builder.add_node("persistence", persistence_node)
+
+    # Set entry and build the chain
+    builder.set_entry_point("analysis")
+    builder.add_edge("analysis", "modification_plan")
+    builder.add_edge("modification_plan", "generator")
+    # Phase 5: generator -> code_review -> persistence
+    builder.add_edge("generator", "code_review")
+    builder.add_edge("code_review", "persistence")
+
+    if enable_reflexion:
+        builder.add_node("trigger_build", trigger_build_node)
+        builder.add_node("reflexion", reflexion_node)
+        builder.add_node("escalation", escalation_node)
+
+        builder.add_edge("persistence", "trigger_build")
+        builder.add_conditional_edges(
+            "trigger_build",
+            should_fix,
+            {
+                "end": END,
+                "reflexion": "reflexion",
+                "escalate": "escalation",
+            }
+        )
+        builder.add_edge("reflexion", "generator")
+        builder.add_edge("escalation", "analysis")
+    else:
+        builder.add_edge("persistence", END)
+
+    if checkpointer:
+        logger.info("Compiling modification graph with checkpointer")
+        return builder.compile(checkpointer=checkpointer)
+    else:
+        logger.info("Compiling modification graph without checkpointer")
         return builder.compile()
 
 
