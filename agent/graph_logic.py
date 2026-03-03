@@ -423,6 +423,10 @@ async def plan_node(
 {mcp_lines}
 """
 
+    # --- RAG Template Retrieval ---
+    retrieval_metadata: Dict[str, Any] = {}
+    rag_context = ""
+
     # Add existing files context if in delta mode
     if file_system:
         existing_files = "\n".join(f"- {path}" for path in file_system.keys())
@@ -431,8 +435,43 @@ async def plan_node(
 {existing_files}
 """
     else:
-        # No existing files - include template info so planner knows what's available
-        user_content += get_template_context_for_planner()
+        # No existing files - try RAG retrieval for template context
+        try:
+            from agent.template_rag import get_rag_context_for_prompt
+            rag_context, retrieval_metadata = get_rag_context_for_prompt(
+                query=state.get("user_prompt", ""),
+                task_description=state.get("user_prompt", ""),
+                top_k=8,
+            )
+            if not retrieval_metadata.get("fallback_used"):
+                logger.info(
+                    f"plan_node: RAG retrieved {retrieval_metadata.get('chunks_retrieved', 0)} chunks "
+                    f"from {len(retrieval_metadata.get('file_paths_matched', []))} files"
+                )
+        except Exception as e:
+            logger.warning(f"plan_node: RAG retrieval failed, using static template info: {e}")
+            rag_context = get_template_context_for_planner()
+            retrieval_metadata = {"fallback_used": True, "error": str(e)}
+
+        # Use RAG context (or fallback static info)
+        user_content += rag_context if rag_context else get_template_context_for_planner()
+
+        # Emit retrieval_context Ably event for frontend visibility
+        if thread_id and retrieval_metadata.get("chunks_retrieved", 0) > 0:
+            try:
+                from agent.reflexion import publish_to_ably
+                channel_prefix = os.getenv("ABLY_CHANNEL_PREFIX", "ai-backend-generation")
+                await publish_to_ably(
+                    f"{channel_prefix}:{thread_id}",
+                    {
+                        "status": "retrieval_context",
+                        "chunks_retrieved": retrieval_metadata["chunks_retrieved"],
+                        "file_paths": retrieval_metadata.get("file_paths_matched", []),
+                        "message": f"Retrieved {retrieval_metadata['chunks_retrieved']} relevant template snippets",
+                    }
+                )
+            except Exception as e:
+                logger.debug(f"plan_node: Failed to publish retrieval_context event: {e}")
 
     user_content += """
 ## Task
@@ -472,6 +511,7 @@ Generate the implementation plan as a JSON array. Return ONLY the JSON array, no
             "iteration_count": state.get("iteration_count", 0) + 1,
             "conversation_history": conversation_history,
             "project_context": project_context,
+            "retrieval_metadata": retrieval_metadata,
         }
 
     except json.JSONDecodeError as e:
@@ -488,6 +528,7 @@ Generate the implementation plan as a JSON array. Return ONLY the JSON array, no
             "iteration_count": state.get("iteration_count", 0) + 1,
             "conversation_history": conversation_history,
             "project_context": project_context,
+            "retrieval_metadata": retrieval_metadata,
         }
     except Exception as e:
         logger.error(f"plan_node: Unexpected error: {e}")
@@ -625,6 +666,30 @@ def check_approval(state: AgentState) -> Literal["template_upload", "planner"]:
 
 
 # =============================================================================
+# Conditional Edge: Quality Gate (code_review -> persistence or generator)
+# =============================================================================
+
+def should_proceed_after_review(state: AgentState) -> Literal["persistence", "generator"]:
+    """
+    Quality gate: if critical (unfixed) errors remain after code review,
+    loop back to generator for one re-generation attempt.
+    If iteration_count >= 2, proceed to persistence anyway (avoid infinite loops).
+    """
+    quality = state.get("quality_summary", {})
+    iteration = state.get("iteration_count", 0)
+
+    if quality.get("blocking") and iteration < 2:
+        remaining = quality.get("remaining_critical_errors", 0)
+        logger.info(
+            f"should_proceed_after_review: {remaining} critical error(s) remain, "
+            f"iteration={iteration} -> re-generating"
+        )
+        return "generator"
+
+    return "persistence"
+
+
+# =============================================================================
 # Graph Assembly
 # =============================================================================
 
@@ -704,10 +769,17 @@ def create_antigravity_graph(
         # Chain: template_upload -> generator (Phase 2)
         builder.add_edge("template_upload", "generator")
 
-    # Phase 5: generator -> code_review -> persistence
+    # Phase 5: generator -> code_review -> quality gate -> persistence (or re-generate)
     builder.add_edge("generator", "code_review")
-    builder.add_edge("code_review", "persistence")
-    
+    builder.add_conditional_edges(
+        "code_review",
+        should_proceed_after_review,
+        {
+            "persistence": "persistence",
+            "generator": "generator",
+        }
+    )
+
     if enable_reflexion:
         # Add reflexion nodes
         builder.add_node("trigger_build", trigger_build_node)
@@ -789,9 +861,16 @@ def create_modification_graph(
     builder.set_entry_point("analysis")
     builder.add_edge("analysis", "modification_plan")
     builder.add_edge("modification_plan", "generator")
-    # Phase 5: generator -> code_review -> persistence
+    # Phase 5: generator -> code_review -> quality gate -> persistence (or re-generate)
     builder.add_edge("generator", "code_review")
-    builder.add_edge("code_review", "persistence")
+    builder.add_conditional_edges(
+        "code_review",
+        should_proceed_after_review,
+        {
+            "persistence": "persistence",
+            "generator": "generator",
+        }
+    )
 
     if enable_reflexion:
         builder.add_node("trigger_build", trigger_build_node)

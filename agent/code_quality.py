@@ -230,6 +230,14 @@ class CodeReviewer:
             issues = self.check_server_action_directive(working_content, file_path)
             result.issues.extend(issues)
 
+        # TypeScript basic checks (any usage, missing return types)
+        issues = self.check_typescript_basic(working_content, file_path)
+        result.issues.extend(issues)
+
+        # Unused import detection
+        issues, working_content = self.check_unused_imports(working_content)
+        result.issues.extend(issues)
+
         # Recalculate counts
         result.error_count = sum(1 for i in result.issues if i.severity == "error")
         result.warning_count = sum(1 for i in result.issues if i.severity == "warning")
@@ -502,6 +510,104 @@ class CodeReviewer:
                 results.append(result)
 
         return results
+
+    # -------------------------------------------------------------------------
+    # Check: basic TypeScript issues (any usage, missing return types)
+    # -------------------------------------------------------------------------
+    def check_typescript_basic(
+        self, content: str, file_path: str
+    ) -> List[QualityIssue]:
+        """Flag common TypeScript anti-patterns without running tsc."""
+        issues: List[QualityIssue] = []
+
+        # Check for `: any` usage (warning)
+        for match in re.finditer(r':\s*any\b', content):
+            line = content[:match.start()].count('\n') + 1
+            issues.append(QualityIssue(
+                rule="typescript_any_usage",
+                severity="warning",
+                line=line,
+                message=f"Usage of 'any' type at line {line}. Prefer specific types or 'unknown'.",
+                auto_fixable=False,
+            ))
+
+        # Check for missing return type on exported functions (info only)
+        for match in re.finditer(
+            r'export\s+(?:async\s+)?function\s+(\w+)\s*\([^)]*\)\s*\{', content
+        ):
+            # Check if there's a return type annotation before the `{`
+            before_brace = content[match.start():match.end()]
+            if ')' in before_brace and '): ' not in before_brace:
+                line = content[:match.start()].count('\n') + 1
+                fn_name = match.group(1)
+                issues.append(QualityIssue(
+                    rule="missing_return_type",
+                    severity="info",
+                    line=line,
+                    message=f"Exported function '{fn_name}' at line {line} has no return type annotation",
+                    auto_fixable=False,
+                ))
+
+        return issues
+
+    # -------------------------------------------------------------------------
+    # Check: unused imports
+    # -------------------------------------------------------------------------
+    def check_unused_imports(
+        self, content: str
+    ) -> Tuple[List[QualityIssue], str]:
+        """Detect imports that are never referenced in the rest of the file."""
+        issues: List[QualityIssue] = []
+        lines = content.split('\n')
+        import_names: List[Tuple[str, int, str]] = []  # (name, line_idx, full_line)
+
+        for idx, line in enumerate(lines):
+            stripped = line.strip()
+            if not stripped.startswith('import '):
+                continue
+
+            # Extract named imports: import { A, B } from '...'
+            named_match = re.search(r'import\s*\{([^}]+)\}', stripped)
+            if named_match:
+                for name in named_match.group(1).split(','):
+                    name = name.strip()
+                    if ' as ' in name:
+                        name = name.split(' as ')[1].strip()
+                    if name:
+                        import_names.append((name, idx, stripped))
+
+            # Default imports: import Foo from '...'
+            default_match = re.match(r"import\s+(\w+)\s+from\s+", stripped)
+            if default_match:
+                import_names.append((default_match.group(1), idx, stripped))
+
+        # Check each import name against the rest of the file
+        # Get all non-import lines for reference checking
+        non_import_content = '\n'.join(
+            line for line in lines
+            if not line.strip().startswith('import ')
+        )
+
+        removed_lines: set = set()
+        for name, line_idx, full_line in import_names:
+            # Skip type-only and very short names (likely false positives)
+            if len(name) < 2:
+                continue
+
+            # Count occurrences in non-import content
+            pattern = re.compile(r'\b' + re.escape(name) + r'\b')
+            occurrences = len(pattern.findall(non_import_content))
+
+            if occurrences == 0:
+                issues.append(QualityIssue(
+                    rule="unused_import",
+                    severity="warning",
+                    line=line_idx + 1,
+                    message=f"Import '{name}' at line {line_idx + 1} appears unused",
+                    auto_fixable=False,  # Risky to auto-remove (could break type-only usage)
+                ))
+
+        return issues, content
 
     # -------------------------------------------------------------------------
     # Batch review

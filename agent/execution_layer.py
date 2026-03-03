@@ -1529,6 +1529,12 @@ async def generation_node(
         build_logs.append("Warning: No tasks in implementation plan")
         return {"file_system": file_system, "build_logs": build_logs, "files_streamed": files_streamed}
 
+    # Validate and correct plan operations (protected files, misclassified ops)
+    from agent.file_ops import validate_plan_operations, PROTECTED_FILES
+    plan, op_warnings = validate_plan_operations(plan, file_system)
+    for w in op_warnings:
+        build_logs.append(f"Plan correction: {w}")
+
     # Get LLM
     llm = get_generation_llm()
 
@@ -1577,6 +1583,12 @@ async def generation_node(
         if not file_path:
             logger.warning(f"generation_node: Task {task_id} has no file_path, skipping")
             build_logs.append(f"Skipped task {task_id}: no file path")
+            continue
+
+        # Hard block: skip protected files entirely (safety net)
+        if file_path in PROTECTED_FILES:
+            logger.warning(f"generation_node: BLOCKED modification of protected file {file_path}")
+            build_logs.append(f"BLOCKED: Cannot modify protected file {file_path}")
             continue
 
         # Skip template files - they were already uploaded in Phase 1
@@ -1629,6 +1641,23 @@ async def generation_node(
             user_content += f"""
 {component_signatures}
 """
+
+        # --- Per-task RAG retrieval for relevant template context ---
+        try:
+            from agent.template_rag import retrieve_relevant_chunks
+            task_rag_results = retrieve_relevant_chunks(
+                query=description,
+                task_description=f"{task_type} {file_path}: {description}",
+                top_k=3,
+            )
+            if task_rag_results:
+                from agent.template_rag import get_template_rag
+                rag = get_template_rag()
+                task_rag_context = rag.format_for_prompt(task_rag_results)
+                if task_rag_context:
+                    user_content += f"\n{task_rag_context}\n"
+        except Exception as e:
+            logger.debug(f"generation_node: Task-level RAG skipped: {e}")
 
         if existing_content:
             user_content += f"""
@@ -1897,6 +1926,19 @@ async def code_review_node(
         quality_summary = summary.to_dict()
         quality_summary["mcp_tools_used"] = mcp_advisory.get("tools_used", [])
         quality_summary["mcp_advisory"] = mcp_advisory.get("references", [])
+
+        # Check for unfixed critical errors (blocking gate)
+        remaining_critical = sum(
+            1 for r in summary.results
+            for i in r.issues
+            if i.severity == "error" and not i.fix_applied
+        )
+        quality_summary["blocking"] = remaining_critical > 0
+        quality_summary["remaining_critical_errors"] = remaining_critical
+        if remaining_critical > 0:
+            build_logs.append(
+                f"Quality gate: {remaining_critical} unfixed critical error(s) remain"
+            )
 
         return {
             "file_system": file_system,  # possibly mutated with auto-fixes
