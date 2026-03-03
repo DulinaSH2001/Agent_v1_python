@@ -249,11 +249,19 @@ async def publish_plan_to_ably(job_id: str, plan: List[Dict[str, Any]], awaiting
         # Format plan for display
         plan_summary = []
         for i, task in enumerate(plan, 1):
+            requires_shadcn = task.get("requires_shadcn", [])
+            if not isinstance(requires_shadcn, list):
+                requires_shadcn = []
+            mcp_tools_used = task.get("mcp_tools_used", [])
+            if not isinstance(mcp_tools_used, list):
+                mcp_tools_used = []
             plan_summary.append({
-                "index": i,
+                "index": task.get("index", i),
                 "type": task.get("type", "create"),
                 "file_path": task.get("file_path", "unknown"),
                 "description": task.get("description", "")[:100],
+                "requires_shadcn": [str(c) for c in requires_shadcn],
+                "mcp_tools_used": [str(t) for t in mcp_tools_used],
             })
 
         data = {

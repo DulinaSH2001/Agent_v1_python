@@ -170,6 +170,62 @@ When applying this change:
 5. If a Tailwind class equivalent exists for the style change, use it (e.g. `bg-blue-500` not `backgroundColor: '#3B82F6'`)
 """
 
+SHADCN_KEYWORD_MAP = {
+    "button": ["button", "cta", "submit", "click"],
+    "card": ["card", "tile", "panel"],
+    "input": ["input", "field", "textbox"],
+    "label": ["label"],
+    "badge": ["badge", "tag", "chip"],
+    "dialog": ["dialog", "modal", "popup"],
+    "skeleton": ["skeleton", "loading placeholder", "loading state"],
+    "table": ["table", "grid", "list view"],
+}
+
+
+def infer_required_shadcn(text: str) -> List[str]:
+    if not text:
+        return []
+
+    lower = text.lower()
+    required: List[str] = []
+    for component, terms in SHADCN_KEYWORD_MAP.items():
+        if any(term in lower for term in terms):
+            required.append(component)
+    return sorted(set(required))
+
+
+def enrich_plan_with_mcp_metadata(
+    implementation_plan: List[Dict[str, Any]],
+    mcp_tools_used: List[str],
+) -> List[Dict[str, Any]]:
+    enriched: List[Dict[str, Any]] = []
+    tools = sorted(set(mcp_tools_used))
+
+    for i, task in enumerate(implementation_plan, 1):
+        if not isinstance(task, dict):
+            continue
+        task_copy = dict(task)
+        task_copy.setdefault("index", i)
+
+        combined_text = f"{task_copy.get('description', '')} {task_copy.get('file_path', '')}"
+        existing_requires = task_copy.get("requires_shadcn")
+        if isinstance(existing_requires, list):
+            inferred = [str(x).strip().lower() for x in existing_requires if str(x).strip()]
+        else:
+            inferred = infer_required_shadcn(combined_text)
+
+        if inferred:
+            task_copy["requires_shadcn"] = sorted(set(inferred))
+        if tools:
+            current_tools = task_copy.get("mcp_tools_used", [])
+            if not isinstance(current_tools, list):
+                current_tools = []
+            task_copy["mcp_tools_used"] = sorted(set([*current_tools, *tools]))
+
+        enriched.append(task_copy)
+
+    return enriched
+
 
 # =============================================================================
 # LLM Configuration
@@ -288,6 +344,24 @@ async def plan_node(
     org_slug = state.get("org_slug", "")
     project_slug = state.get("project_slug", "")
     thread_id = config.get("configurable", {}).get("thread_id", "")
+    mcp_context: Dict[str, Any] = {
+        "references": [],
+        "tools_used": [],
+        "warnings": [],
+    }
+
+    try:
+        from agent.execution_layer import gather_mcp_context
+        mcp_context = await gather_mcp_context(
+            phase="planning",
+            prompt=state.get("user_prompt", ""),
+            manifest=state.get("manifest", {}),
+            task={"description": state.get("user_prompt", "")},
+            thread_id=thread_id,
+            max_references=3,
+        )
+    except Exception as e:
+        logger.warning(f"plan_node: MCP planning enrichment unavailable: {e}")
 
     conversation_history = state.get("conversation_history", [])
     project_context = state.get("project_context", {})
@@ -342,6 +416,13 @@ async def plan_node(
 {state.get("user_prompt", "No specific requirements provided.")}
 """
 
+    if mcp_context.get("references"):
+        mcp_lines = "\n".join(f"- {ref}" for ref in mcp_context["references"])
+        user_content += f"""
+## MCP References
+{mcp_lines}
+"""
+
     # Add existing files context if in delta mode
     if file_system:
         existing_files = "\n".join(f"- {path}" for path in file_system.keys())
@@ -379,6 +460,10 @@ Generate the implementation plan as a JSON array. Return ONLY the JSON array, no
             content = content.strip()
 
         implementation_plan = json.loads(content)
+        implementation_plan = enrich_plan_with_mcp_metadata(
+            implementation_plan,
+            mcp_context.get("tools_used", []),
+        )
 
         logger.info(f"plan_node: Generated {len(implementation_plan)} tasks")
 

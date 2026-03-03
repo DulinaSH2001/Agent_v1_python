@@ -1428,6 +1428,17 @@ async def modification_planning_node(
     try:
         analysis = state.get("modification_analysis", {})
         affected_files = analysis.get("affected_files", [])
+        thread_id = config.get("configurable", {}).get("thread_id", "") if config else ""
+        modification_request = state.get("user_message", state.get("query", ""))
+
+        mcp_context = await gather_mcp_context(
+            phase="modification",
+            prompt=modification_request,
+            manifest=state.get("manifest", {}),
+            task={"description": modification_request, "file_path": ",".join(affected_files[:2])},
+            thread_id=thread_id,
+            max_references=2,
+        )
 
         if not affected_files:
             logger.warning("No affected files to plan modifications for")
@@ -1447,6 +1458,8 @@ async def modification_planning_node(
                 "operation": "modify",  # vs "create" or "delete"
                 "scope": scope,
                 "dependencies": file_impact.get("imported_by", [])[:3],  # Top 3 dependents
+                "mcp_tools_used": mcp_context.get("tools_used", []),
+                "requires_shadcn": infer_shadcn_components_from_text(modification_request),
             })
 
         logger.info(f"Created modification targets for {len(modification_targets)} files")
@@ -1830,6 +1843,18 @@ async def code_review_node(
         reviewer = CodeReviewer()
         # auto_fix=True mutates file_system in-place with corrections
         summary = reviewer.review_file_system(file_system, auto_fix=True)
+        mcp_advisory = await gather_mcp_context(
+            phase="code_review",
+            prompt=(
+                f"Quality score {summary.quality_score}. "
+                f"errors={summary.total_errors} warnings={summary.total_warnings}"
+            ),
+            manifest=state.get("manifest", {}),
+            task={"description": "Final quality advisory for generated files"},
+            error_text="\n".join(build_logs[-10:]),
+            thread_id=thread_id,
+            max_references=2,
+        )
 
         logger.info(
             f"code_review_node: Review complete — "
@@ -1866,11 +1891,17 @@ async def code_review_node(
             f"errors={summary.total_errors}, warnings={summary.total_warnings}, "
             f"auto_fixes={summary.auto_fixes_applied}"
         )
+        if mcp_advisory["warnings"]:
+            build_logs.extend([f"MCP advisory warning: {w}" for w in mcp_advisory["warnings"][:2]])
+
+        quality_summary = summary.to_dict()
+        quality_summary["mcp_tools_used"] = mcp_advisory.get("tools_used", [])
+        quality_summary["mcp_advisory"] = mcp_advisory.get("references", [])
 
         return {
             "file_system": file_system,  # possibly mutated with auto-fixes
             "build_logs": build_logs,
-            "quality_summary": summary.to_dict(),
+            "quality_summary": quality_summary,
         }
 
     except Exception as e:

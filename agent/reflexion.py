@@ -746,20 +746,41 @@ async def reflexion_node(
         HumanMessage(content=user_content),
     ]
 
-    # Augment with known GitHub issues for specific error patterns
-    github_tool = MockGithubIssuesTool()
-    error_lower = error_text.lower()
-    github_queries = []
-    if "hydration" in error_lower or "runtime_errors" in categories:
-        github_queries.append("hydration")
-    if "server action" in error_lower or "directive_errors" in categories:
-        github_queries.append("server action")
-    if "turbopack" in error_lower:
-        github_queries.append("turbopack")
+    # Augment with MCP context (warn-and-continue on failure)
+    mcp_references: List[str] = []
+    try:
+        from agent.execution_layer import gather_mcp_context
+        mcp_context = await gather_mcp_context(
+            phase="reflexion",
+            prompt=state.get("user_prompt", ""),
+            manifest=state.get("manifest", {}),
+            task={"description": "Analyze and fix build failures"},
+            error_text=error_text,
+            thread_id=thread_id,
+            max_references=3,
+        )
+        mcp_references = mcp_context.get("references", [])
+    except Exception as e:
+        logger.warning(f"reflexion_node: MCP context unavailable: {e}")
 
-    for query in github_queries[:2]:  # Max 2 lookups to avoid excessive context
-        github_context = await github_tool._arun(query)
-        messages.append(HumanMessage(content=f"## Known GitHub Issues ({query})\n{github_context}"))
+    if mcp_references:
+        for ref in mcp_references[:3]:
+            messages.append(HumanMessage(content=f"## MCP Reference\n{ref}"))
+    else:
+        # Fallback to local GitHub issue mock context
+        github_tool = MockGithubIssuesTool()
+        error_lower = error_text.lower()
+        github_queries = []
+        if "hydration" in error_lower or "runtime_errors" in categories:
+            github_queries.append("hydration")
+        if "server action" in error_lower or "directive_errors" in categories:
+            github_queries.append("server action")
+        if "turbopack" in error_lower:
+            github_queries.append("turbopack")
+
+        for query in github_queries[:2]:  # Max 2 lookups to avoid excessive context
+            github_context = await github_tool._arun(query)
+            messages.append(HumanMessage(content=f"## Known GitHub Issues ({query})\n{github_context}"))
 
     # --- Generate fix plan ---
     llm = get_debugger_llm()

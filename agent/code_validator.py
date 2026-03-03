@@ -123,26 +123,3 @@ def validate_file(file_path: str, content: str) -> Tuple[bool, str]:
         return True, ""
 
 
-def get_file_size_mb(content: str) -> float:
-    """Get file size in megabytes."""
-    return len(content.encode('utf-8')) / (1024 * 1024)
-
-
-def validate_file_size(file_path: str, content: str, max_size_mb: float = 5.0) -> Tuple[bool, str]:
-    """
-    Validate that file size is within acceptable limits.
-    
-    Args:
-        file_path: Path to the file
-        content: File content
-        max_size_mb: Maximum allowed file size in MB
-        
-    Returns:
-        Tuple of (is_valid, error_message)
-    """
-    size_mb = get_file_size_mb(content)
-    
-    if size_mb > max_size_mb:
-        return False, f"File too large: {size_mb:.2f}MB (max: {max_size_mb}MB)"
-    
-    return True, ""
