@@ -16,6 +16,7 @@ import asyncio
 import json
 import logging
 import os
+import re
 from typing import Any, Dict, List, Optional, Tuple
 
 from dotenv import load_dotenv
@@ -801,6 +802,346 @@ async def get_mcp_wrapper() -> MCPWrapper:
 
 
 # =============================================================================
+# MCP Context Helpers
+# =============================================================================
+
+SHADCN_COMPONENT_HINTS = [
+    "alert",
+    "alert-dialog",
+    "avatar",
+    "badge",
+    "button",
+    "card",
+    "checkbox",
+    "dialog",
+    "dropdown-menu",
+    "input",
+    "label",
+    "progress",
+    "scroll-area",
+    "select",
+    "separator",
+    "sheet",
+    "skeleton",
+    "switch",
+    "table",
+    "tabs",
+    "textarea",
+    "toast",
+    "tooltip",
+]
+
+
+async def publish_tool_use(
+    thread_id: str,
+    phase: str,
+    tool_name: str,
+    message: str,
+    *,
+    success: bool,
+    args: Optional[Dict[str, Any]] = None,
+    warning: Optional[str] = None,
+    file_path: Optional[str] = None,
+    task_index: Optional[int] = None,
+) -> bool:
+    """Publish a tool_use status update to Ably for frontend visibility."""
+    if not thread_id:
+        return False
+
+    try:
+        from ably import AblyRealtime
+
+        api_key = os.getenv("ABLY_API_KEY")
+        if not api_key:
+            return False
+
+        channel_prefix = os.getenv("ABLY_CHANNEL_PREFIX", "ai-backend-generation")
+        channel_name = f"{channel_prefix}:{thread_id}"
+        client = AblyRealtime(api_key)
+        channel = client.channels.get(channel_name)
+
+        payload = {
+            "status": "tool_use",
+            "phase": phase,
+            "tool": tool_name,
+            "message": message,
+            "success": success,
+            "args": args or {},
+        }
+        if warning:
+            payload["warning"] = warning
+        if file_path:
+            payload["file_path"] = file_path
+        if task_index is not None:
+            payload["task_index"] = task_index
+
+        await channel.publish("status", payload)
+        await client.close()
+        return True
+    except Exception as e:
+        logger.warning(f"Failed to publish tool_use event: {e}")
+        return False
+
+
+def infer_shadcn_components_from_text(text: str) -> List[str]:
+    """Infer likely shadcn components mentioned in a text."""
+    if not text:
+        return []
+
+    haystack = text.lower()
+    found: List[str] = []
+    for comp in SHADCN_COMPONENT_HINTS:
+        if comp in haystack:
+            found.append(comp)
+            continue
+        token = comp.replace("-", " ")
+        if " " not in token and re.search(rf"\b{re.escape(token)}\b", haystack):
+            found.append(comp)
+
+    return sorted(set(found))
+
+
+def _classify_tool(tool: BaseTool) -> List[str]:
+    meta = f"{getattr(tool, 'name', '')} {getattr(tool, 'description', '')}".lower()
+    categories: List[str] = []
+    if "shadcn" in meta or "component" in meta:
+        categories.append("shadcn")
+    if "next" in meta or "devtools" in meta or "docs" in meta:
+        categories.append("next")
+    if "github" in meta:
+        categories.append("github")
+    if "search" in meta or "brave" in meta:
+        categories.append("search")
+    return categories
+
+
+def _tool_field_names(tool: BaseTool) -> List[str]:
+    schema = getattr(tool, "args_schema", None)
+    if not schema:
+        return []
+    model_fields = getattr(schema, "model_fields", None)
+    if isinstance(model_fields, dict):
+        return list(model_fields.keys())
+    return []
+
+
+def _build_tool_payloads(
+    tool: BaseTool,
+    query: str,
+    *,
+    component_name: str,
+    topic: Optional[str] = None,
+) -> List[Any]:
+    fields = set(_tool_field_names(tool))
+    payloads: List[Any] = []
+
+    if "component_name" in fields:
+        payload: Dict[str, Any] = {"component_name": component_name}
+        if "include_variants" in fields:
+            payload["include_variants"] = True
+        payloads.append(payload)
+
+    if fields:
+        generic_payload: Dict[str, Any] = {}
+        for field in fields:
+            if field in {"query", "q", "text", "prompt", "question", "search"}:
+                generic_payload[field] = query
+            elif field in {"component", "component_name"}:
+                generic_payload[field] = component_name
+            elif field == "include_variants":
+                generic_payload[field] = True
+            elif field == "topic" and topic:
+                generic_payload[field] = topic
+            elif field == "repo":
+                generic_payload[field] = "vercel/next.js"
+        if generic_payload:
+            payloads.append(generic_payload)
+
+    payloads.extend([{"query": query}, {"q": query}, query])
+    return payloads
+
+
+async def _invoke_tool_best_effort(tool: BaseTool, payloads: List[Any]) -> Tuple[Optional[str], Optional[str], Optional[Dict[str, Any]]]:
+    """Try multiple payload shapes to accommodate varied MCP tool schemas."""
+    last_error: Optional[Exception] = None
+
+    for payload in payloads:
+        try:
+            if hasattr(tool, "ainvoke"):
+                result = await tool.ainvoke(payload)
+            elif isinstance(payload, dict):
+                result = await tool._arun(**payload)  # type: ignore[attr-defined]
+            else:
+                result = await tool._arun(payload)  # type: ignore[attr-defined]
+
+            used_args = payload if isinstance(payload, dict) else {"query": str(payload)}
+            return str(result), None, used_args
+        except Exception as e:
+            last_error = e
+
+    return None, str(last_error) if last_error else "Unknown tool invocation failure", None
+
+
+async def gather_mcp_context(
+    *,
+    phase: str,
+    prompt: str,
+    manifest: Optional[Dict[str, Any]] = None,
+    task: Optional[Dict[str, Any]] = None,
+    error_text: Optional[str] = None,
+    thread_id: str = "",
+    file_path: Optional[str] = None,
+    task_index: Optional[int] = None,
+    max_references: int = 4,
+) -> Dict[str, Any]:
+    """
+    Collect MCP context snippets for a phase and emit tool_use events.
+    Continues on MCP/tool failures.
+    """
+    task = task or {}
+    query = " ".join(
+        chunk
+        for chunk in [
+            prompt.strip() if prompt else "",
+            task.get("description", "").strip(),
+            error_text.strip() if error_text else "",
+        ]
+        if chunk
+    )[:1200]
+
+    try:
+        mcp = await get_mcp_wrapper()
+        tools = mcp.get_tools()
+    except Exception as e:
+        warning = f"MCP initialization failed: {e}"
+        logger.warning(warning)
+        await publish_tool_use(
+            thread_id=thread_id,
+            phase=phase,
+            tool_name="mcp_init",
+            message=warning,
+            success=False,
+            warning=warning,
+            file_path=file_path,
+            task_index=task_index,
+        )
+        return {"references": [], "tools_used": [], "warnings": [warning], "mcp_available": False}
+
+    if not tools:
+        warning = "No MCP tools available"
+        await publish_tool_use(
+            thread_id=thread_id,
+            phase=phase,
+            tool_name="mcp_tools",
+            message=warning,
+            success=False,
+            warning=warning,
+            file_path=file_path,
+            task_index=task_index,
+        )
+        return {"references": [], "tools_used": [], "warnings": [warning], "mcp_available": mcp.mcp_available}
+
+    required_categories = {"shadcn", "next"}
+    error_sensitive_text = f"{query} {error_text or ''}".lower()
+    if phase in {"reflexion", "code_review"} or "error" in error_sensitive_text or "failed" in error_sensitive_text:
+        required_categories.update({"github", "search"})
+
+    picked_tools: List[BaseTool] = []
+    for category in ["shadcn", "next", "github", "search"]:
+        if category not in required_categories:
+            continue
+        for tool in tools:
+            if category in _classify_tool(tool):
+                picked_tools.append(tool)
+                break
+
+    if not picked_tools:
+        picked_tools = tools[:2]
+
+    deduped_tools: List[BaseTool] = []
+    seen_names = set()
+    for tool in picked_tools:
+        name = getattr(tool, "name", str(tool))
+        if name in seen_names:
+            continue
+        seen_names.add(name)
+        deduped_tools.append(tool)
+
+    inferred_components = infer_shadcn_components_from_text(query)
+    primary_component = inferred_components[0] if inferred_components else "button"
+    references: List[str] = []
+    tools_used: List[str] = []
+    warnings: List[str] = []
+
+    for tool in deduped_tools:
+        tool_name = getattr(tool, "name", "unknown_tool")
+        tool_categories = _classify_tool(tool)
+        topic = "server-actions" if "action" in query.lower() else "routing"
+        if "shadcn" in tool_categories:
+            topic = "components"
+        elif "github" in tool_categories:
+            topic = "known-bugs"
+
+        payloads = _build_tool_payloads(
+            tool,
+            query or prompt or "nextjs shadcn best practices",
+            component_name=primary_component,
+            topic=topic,
+        )
+
+        await publish_tool_use(
+            thread_id=thread_id,
+            phase=phase,
+            tool_name=tool_name,
+            message=f"Using MCP tool {tool_name}",
+            success=True,
+            args={"topic": topic},
+            file_path=file_path,
+            task_index=task_index,
+        )
+
+        result, error, used_args = await _invoke_tool_best_effort(tool, payloads)
+        if result:
+            tools_used.append(tool_name)
+            excerpt = result.strip()
+            if len(excerpt) > 1200:
+                excerpt = excerpt[:1200] + "..."
+            references.append(f"[{tool_name}] {excerpt}")
+            await publish_tool_use(
+                thread_id=thread_id,
+                phase=phase,
+                tool_name=tool_name,
+                message=f"MCP tool {tool_name} completed",
+                success=True,
+                args=used_args or {},
+                file_path=file_path,
+                task_index=task_index,
+            )
+        else:
+            warning = f"{tool_name} unavailable: {error or 'Unknown error'}"
+            warnings.append(warning)
+            logger.warning(f"gather_mcp_context: {warning}")
+            await publish_tool_use(
+                thread_id=thread_id,
+                phase=phase,
+                tool_name=tool_name,
+                message=warning,
+                success=False,
+                warning=warning,
+                args=used_args or {},
+                file_path=file_path,
+                task_index=task_index,
+            )
+
+    return {
+        "references": references[:max_references],
+        "tools_used": sorted(set(tools_used)),
+        "warnings": warnings,
+        "mcp_available": mcp.mcp_available,
+    }
+
+
+# =============================================================================
 # LLM Configuration for Generation
 # =============================================================================
 
@@ -1175,13 +1516,8 @@ async def generation_node(
         build_logs.append("Warning: No tasks in implementation plan")
         return {"file_system": file_system, "build_logs": build_logs, "files_streamed": files_streamed}
 
-    # Get LLM and tools
+    # Get LLM
     llm = get_generation_llm()
-    mcp = await get_mcp_wrapper()
-    tools = mcp.get_tools()
-
-    # Bind tools to LLM
-    llm_with_tools = llm.bind_tools(tools)
 
     # Get manifest for context
     manifest = state.get("manifest", {})
@@ -1296,35 +1632,30 @@ When using components, always verify the required props from the "Available Comp
 Never invent component prop signatures - only use components as defined.
 """
 
-        # Check if we should use tools for this task
-        use_tools = mcp.should_use_tools(task)
-
         try:
             messages = [
                 SystemMessage(content=system_prompt),
                 HumanMessage(content=user_content),
             ]
 
-            if use_tools:
-                # First, query relevant documentation
-                logger.info(f"generation_node: Using tools for {task_id}")
-
-                # Get relevant docs based on task
-                if "shadcn" in description.lower() or "component" in description.lower():
-                    # Try to extract component name
-                    for comp in ["button", "card", "input", "form", "table", "dialog"]:
-                        if comp in description.lower():
-                            comp_tool = next((t for t in tools if t.name == "get_shadcn_component"), None)
-                            if comp_tool:
-                                docs = await comp_tool._arun(comp)
-                                messages.append(HumanMessage(content=f"## Shadcn Component Reference\n{docs}"))
-                            break
-
-                if "server action" in description.lower() or "action" in description.lower():
-                    docs_tool = next((t for t in tools if t.name == "search_nextjs_docs"), None)
-                    if docs_tool:
-                        docs = await docs_tool._arun("server actions", "server-actions")
-                        messages.append(HumanMessage(content=f"## Next.js Documentation\n{docs}"))
+            mcp_context = await gather_mcp_context(
+                phase="generation",
+                prompt=description,
+                manifest=manifest,
+                task=task,
+                thread_id=thread_id,
+                file_path=file_path,
+                task_index=generated_index,
+                max_references=3,
+            )
+            if mcp_context["references"]:
+                messages.append(
+                    HumanMessage(content="## MCP References\n" + "\n\n".join(mcp_context["references"]))
+                )
+            if mcp_context["warnings"]:
+                build_logs.extend([f"MCP warning ({file_path}): {w}" for w in mcp_context["warnings"][:2]])
+            if mcp_context["tools_used"]:
+                task["mcp_tools_used"] = sorted(set(task.get("mcp_tools_used", []) + mcp_context["tools_used"]))
 
             # Generate the code
             response = await llm.ainvoke(messages, config=config)

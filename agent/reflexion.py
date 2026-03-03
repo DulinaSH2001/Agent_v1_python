@@ -504,6 +504,7 @@ async def publish_to_ably(
 ) -> bool:
     """
     Publish a message to an Ably channel.
+    Handles SSL certificate verification issues on macOS.
     
     Args:
         channel_name: The Ably channel to publish to.
@@ -514,13 +515,31 @@ async def publish_to_ably(
     """
     try:
         from ably import AblyRealtime
+        import ssl
         
         api_key = os.getenv("ABLY_API_KEY")
         if not api_key:
             logger.warning("ABLY_API_KEY not set, skipping publish")
             return False
         
-        client = AblyRealtime(api_key)
+        # Configure SSL context to handle macOS certificate issues
+        try:
+            import certifi
+            ssl_context = ssl.create_default_context(cafile=certifi.where())
+            ssl_context.check_hostname = True
+            ssl_context.verify_mode = ssl.CERT_REQUIRED
+        except ImportError:
+            # Fallback if certifi not available
+            ssl_context = ssl.create_default_context()
+        
+        # Initialize client with SSL configuration
+        client = AblyRealtime(
+            api_key,
+            use_binary_protocol=False,
+            log_level="WARNING",
+            _transport_kwargs={"verify": True}  # Enable SSL verification
+        )
+        
         channel = client.channels.get(channel_name)
         await channel.publish("message", data)
         await client.close()

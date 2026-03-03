@@ -11,6 +11,9 @@ langgraph-checkpoint-redis>=0.1.0
 # Real-time Communication
 ably>=2.0.0
 
+# SSL Certificate Management
+certifi>=2024.0.0
+
 # Database & Caching (Upstash Redis REST API)
 upstash-redis>=1.0.0
 redis>=5.0.0
