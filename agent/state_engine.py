@@ -98,6 +98,10 @@ class AgentState(TypedDict):
     modification_analysis: Dict[str, Any]
     modification_targets: List[Dict[str, Any]]
     delta_mode: bool
+    # Visual editor context: element info + style changes from the visual edit panel
+    visual_context: Optional[Dict[str, Any]]
+    # Data mode: "real_api" (connect to manifest endpoints) or "sample_data" (use inline mock data)
+    data_mode: str
 
 
 
@@ -590,4 +594,5 @@ def get_initial_state(
         modification_analysis={},
         modification_targets=[],
         delta_mode=False,
+        data_mode="real_api",
     )

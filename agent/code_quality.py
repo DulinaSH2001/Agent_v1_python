@@ -130,6 +130,24 @@ class ReviewSummary:
 # Pattern helpers
 # =============================================================================
 
+# Available Shadcn UI components in the template
+AVAILABLE_SHADCN_COMPONENTS = {
+    "alert", "alert-dialog", "avatar", "badge", "button", "card", "checkbox",
+    "dialog", "dropdown-menu", "input", "label", "progress", "scroll-area",
+    "select", "separator", "sheet", "skeleton", "switch", "table", "tabs",
+    "textarea", "toast", "tooltip",
+}
+
+# Regex to extract @/components/ui/<name> imports
+SHADCN_IMPORT_RE = re.compile(
+    r"from\s+['\"]@/components/ui/([a-zA-Z0-9_-]+)['\"]", re.MULTILINE
+)
+
+# Regex to extract @/components/<name> imports (non-ui custom components)
+CUSTOM_COMPONENT_IMPORT_RE = re.compile(
+    r"from\s+['\"]@/components/(?!ui/)([a-zA-Z0-9_/-]+)['\"]", re.MULTILINE
+)
+
 REACT_HOOK_RE = re.compile(r'\b(use[A-Z]\w*)\s*\(', re.MULTILINE)
 USE_CLIENT_RE = re.compile(r"^['\"]use client['\"];?\s*$", re.MULTILINE)
 USE_SERVER_RE = re.compile(r"^['\"]use server['\"];?\s*$", re.MULTILINE)
@@ -200,6 +218,9 @@ class CodeReviewer:
             result.issues.extend(issues)
 
         issues, working_content = self.check_shadcn_import_paths(working_content)
+        result.issues.extend(issues)
+
+        issues, working_content = self.check_shadcn_component_availability(working_content, file_path)
         result.issues.extend(issues)
 
         issues = self.check_bundle_optimization(working_content)
@@ -383,6 +404,106 @@ class CodeReviewer:
         return issues
 
     # -------------------------------------------------------------------------
+    # Check: Shadcn component availability
+    # -------------------------------------------------------------------------
+    def check_shadcn_component_availability(
+        self, content: str, file_path: str
+    ) -> Tuple[List[QualityIssue], str]:
+        """Check that all @/components/ui/* imports reference components that exist in the template."""
+        issues: List[QualityIssue] = []
+
+        for match in SHADCN_IMPORT_RE.finditer(content):
+            component_name = match.group(1)
+            if component_name not in AVAILABLE_SHADCN_COMPONENTS:
+                line = content[:match.start()].count('\n') + 1
+                issue = QualityIssue(
+                    rule="unavailable_shadcn_component",
+                    severity="error",
+                    line=line,
+                    message=(
+                        f"Shadcn component '@/components/ui/{component_name}' does not exist in template. "
+                        f"Available: {', '.join(sorted(AVAILABLE_SHADCN_COMPONENTS))}"
+                    ),
+                    auto_fixable=True,
+                )
+
+                # Auto-fix: comment out the bad import line
+                import_line = match.group(0)
+                # Find the full import statement line
+                line_start = content.rfind('\n', 0, match.start()) + 1
+                line_end = content.find('\n', match.end())
+                if line_end == -1:
+                    line_end = len(content)
+                full_line = content[line_start:line_end]
+
+                # Replace the import line with a comment
+                replacement = f"// REMOVED: unavailable component '{component_name}' — {full_line.strip()}"
+                content = content[:line_start] + replacement + content[line_end:]
+                issue.fix_applied = True
+                issues.append(issue)
+
+        return issues, content
+
+    # -------------------------------------------------------------------------
+    # Check: Cross-file import resolution (system-level)
+    # -------------------------------------------------------------------------
+    @staticmethod
+    def check_cross_file_imports(
+        file_system: Dict[str, str],
+    ) -> List[FileReviewResult]:
+        """
+        Verify that all @/components/<name> imports resolve to files in file_system.
+        Returns FileReviewResults for files with missing import targets.
+        """
+        results: List[FileReviewResult] = []
+
+        # Build set of known component paths (normalize to match import paths)
+        known_paths: set = set()
+        for path in file_system:
+            # Strip extensions for matching: components/Header.tsx -> components/Header
+            if path.startswith("components/"):
+                base = path.rsplit('.', 1)[0] if '.' in path else path
+                known_paths.add(base)
+
+        for file_path, content in file_system.items():
+            if not file_path.endswith(('.ts', '.tsx', '.js', '.jsx')):
+                continue
+
+            file_issues: List[QualityIssue] = []
+            for match in CUSTOM_COMPONENT_IMPORT_RE.finditer(content):
+                import_path = match.group(1)  # e.g., "Header" or "dashboard/StatCard"
+                full_component_path = f"components/{import_path}"
+
+                # Check if the file exists (with or without extension)
+                found = (
+                    full_component_path in known_paths
+                    or f"{full_component_path}/index" in known_paths
+                    or any(p.startswith(full_component_path) for p in known_paths)
+                )
+
+                if not found:
+                    line = content[:match.start()].count('\n') + 1
+                    file_issues.append(QualityIssue(
+                        rule="missing_component_file",
+                        severity="error",
+                        line=line,
+                        message=(
+                            f"Import '@/components/{import_path}' in {file_path} "
+                            f"references a component that was not generated. "
+                            f"Either create the component or remove the import."
+                        ),
+                        auto_fixable=False,
+                    ))
+
+            if file_issues:
+                result = FileReviewResult(file_path=file_path, issues=file_issues)
+                result.error_count = sum(1 for i in file_issues if i.severity == "error")
+                result.warning_count = sum(1 for i in file_issues if i.severity == "warning")
+                results.append(result)
+
+        return results
+
+    # -------------------------------------------------------------------------
     # Batch review
     # -------------------------------------------------------------------------
     def review_file_system(
@@ -417,6 +538,15 @@ class CodeReviewer:
                 auto_fixes_applied += sum(1 for i in result.issues if i.fix_applied)
             else:
                 fixed_file_system[file_path] = content
+
+        # Cross-file import validation (uses full file_system for resolution)
+        cross_file_results = self.check_cross_file_imports(
+            fixed_file_system if auto_fix else file_system
+        )
+        for cf_result in cross_file_results:
+            results.append(cf_result)
+            total_errors += cf_result.error_count
+            total_warnings += cf_result.warning_count
 
         files_with_issues = sum(1 for r in results if r.has_issues)
 

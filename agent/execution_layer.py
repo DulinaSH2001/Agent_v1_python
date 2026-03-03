@@ -111,19 +111,34 @@ export async function createUser(formData: FormData) {
 ### 5. Shadcn UI Components
 ONLY import from these EXACT files that exist in @/components/ui:
 ```typescript
+import { Alert, AlertTitle, AlertDescription } from '@/components/ui/alert';
+import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle, AlertDialogTrigger } from '@/components/ui/alert-dialog';
+import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar';
+import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription, CardFooter } from '@/components/ui/card';
+import { Checkbox } from '@/components/ui/checkbox';
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger, DialogDescription, DialogFooter, DialogClose } from '@/components/ui/dialog';
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuSeparator, DropdownMenuTrigger } from '@/components/ui/dropdown-menu';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
-import { Badge } from '@/components/ui/badge';
-import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog';
+import { Progress } from '@/components/ui/progress';
+import { ScrollArea, ScrollBar } from '@/components/ui/scroll-area';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
+import { Separator } from '@/components/ui/separator';
+import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetDescription, SheetTrigger, SheetClose } from '@/components/ui/sheet';
 import { Skeleton } from '@/components/ui/skeleton';
+import { Switch } from '@/components/ui/switch';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
+import { Textarea } from '@/components/ui/textarea';
+import { Toast, ToastAction, ToastClose, ToastDescription, ToastProvider, ToastTitle, ToastViewport } from '@/components/ui/toast';
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
 ```
 
 NEVER import from `@/components/ui/header`, `@/components/ui/footer`, `@/components/ui/navbar`,
-`@/components/ui/sidebar`, `@/components/ui/dropdown-menu`, `@/components/ui/select`,
-`@/components/ui/tabs`, `@/components/ui/toast`, or any other path not listed above.
+`@/components/ui/sidebar`, `@/components/ui/accordion`, `@/components/ui/popover`,
+`@/components/ui/slider`, `@/components/ui/radio-group`, or any other path not listed above.
 If you need a header, footer, or nav, create them as custom components in `components/`.
 
 ### 6. TypeScript Strict Mode
@@ -227,9 +242,65 @@ If you need a component that is NOT in the "Available Components" list:
 - Option B: Use a Shadcn UI component that IS available
 - Option C: Use simple HTML elements
 
+### 12. API Integration Rules (when manifest is provided)
+When a backend API manifest is provided, follow these rules for data fetching:
+1. Create a `lib/api.ts` helper with typed fetch functions for each manifest endpoint
+2. Use proper error handling: try/catch with user-friendly error states in every data-fetching component
+3. Add loading states using `<Skeleton />` components while data is being fetched
+4. Parse API responses with Zod schemas that match the manifest type definitions
+5. Use environment variable `NEXT_PUBLIC_API_URL` for the base URL (fallback to manifest base URL)
+6. Handle authentication tokens if the manifest specifies auth requirements
+7. For Server Components, use `fetch()` directly with proper cache options
+8. For Client Components, use `useEffect` + `useState` for data fetching with loading/error states
+
+Example API helper pattern:
+```typescript
+// lib/api.ts
+const API_BASE = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3001';
+
+export async function fetchUsers(): Promise<User[]> {
+  const res = await fetch(`${API_BASE}/api/users`, { cache: 'no-store' });
+  if (!res.ok) throw new Error('Failed to fetch users');
+  const data = await res.json();
+  return UserArraySchema.parse(data);
+}
+```
+
 ## Output Format
 Return ONLY the TypeScript/TSX code. No markdown formatting, no explanations.
 Start directly with imports or 'use server'/'use client' directive if needed.
+"""
+
+SAMPLE_DATA_INSTRUCTION = """
+## DATA MODE: Sample Data
+Instead of fetching from API endpoints, generate realistic INLINE mock data for all components.
+- Use static arrays/objects with realistic sample values (names, emails, dates, prices, etc.)
+- Do NOT make any fetch() calls or API requests
+- Show the full UI populated with sample content so the user can see the complete design
+- Place mock data in a `lib/mock-data.ts` file for easy replacement later
+- Use TypeScript types that match the manifest schemas so switching to real API is straightforward
+
+Example:
+```typescript
+// lib/mock-data.ts
+import { User } from '@/types/user';
+
+export const mockUsers: User[] = [
+  { id: '1', name: 'Alice Johnson', email: 'alice@example.com', role: 'admin' },
+  { id: '2', name: 'Bob Smith', email: 'bob@example.com', role: 'user' },
+  { id: '3', name: 'Carol Williams', email: 'carol@example.com', role: 'editor' },
+];
+```
+"""
+
+REAL_API_INSTRUCTION = """
+## DATA MODE: Real API Integration
+Connect to real backend API endpoints as defined in the manifest.
+- Create typed fetch functions in `lib/api.ts` for every manifest endpoint
+- Use proper loading states, error handling, and empty states
+- Parse responses with Zod for runtime type safety
+- Use `NEXT_PUBLIC_API_URL` environment variable for the base URL
+- Add authentication headers if the manifest specifies auth
 """
 
 DELTA_GENERATION_INSTRUCTION = """
@@ -1177,6 +1248,13 @@ async def generation_node(
 
         # Build the prompt
         system_prompt = BUILDER_PROMPT
+
+        # Append data mode instruction
+        data_mode = state.get("data_mode", "real_api")
+        if data_mode == "sample_data":
+            system_prompt += SAMPLE_DATA_INSTRUCTION
+        elif manifest:
+            system_prompt += REAL_API_INSTRUCTION
 
         # Check if this is a modification (Antigravity delta mode)
         existing_content = ""

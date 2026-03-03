@@ -108,6 +108,8 @@ class GenerateRequest(BaseModel):
     project_id: Optional[str] = Field(default=None, description="Project ID")
     org_slug: Optional[str] = Field(default=None, description="Organization slug for file storage")
     project_slug: Optional[str] = Field(default=None, description="Project slug for file storage")
+    visual_context: Optional[Dict[str, Any]] = Field(default=None, description="Visual editor context: selected element info and style changes")
+    data_mode: Optional[str] = Field(default="real_api", description="Data mode: 'real_api' or 'sample_data'")
 
 
 class GenerateResponse(BaseModel):
@@ -382,6 +384,8 @@ async def run_generation_task(
     project_id: Optional[str],
     org_slug: Optional[str],
     project_slug: Optional[str],
+    visual_context: Optional[Dict[str, Any]] = None,
+    data_mode: Optional[str] = "real_api",
 ):
     """Background task to run the agent and publish status updates."""
     try:
@@ -447,6 +451,12 @@ async def run_generation_task(
             org_slug=org_slug,
             project_slug=project_slug,
         )
+        # Attach visual_context so the planning node can use it for targeted edits
+        if visual_context:
+            initial_state["visual_context"] = visual_context
+        # Attach data mode (real_api or sample_data)
+        if data_mode:
+            initial_state["data_mode"] = data_mode
         
         # Get config using job_id as thread_id
         config = get_graph_config(job_id)
@@ -629,8 +639,10 @@ async def start_generation(
         project_id=request.project_id,
         org_slug=request.org_slug,
         project_slug=request.project_slug,
+        visual_context=request.visual_context,
+        data_mode=request.data_mode,
     )
-    
+
     return GenerateResponse(
         success=True,
         message="Generation started",

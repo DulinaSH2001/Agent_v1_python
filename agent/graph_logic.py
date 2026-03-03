@@ -154,6 +154,22 @@ Mark tasks appropriately:
 - `"type": "delete"` - Remove file (rare, only if requested)
 """
 
+VISUAL_EDIT_INSTRUCTION = """
+## VISUAL EDITOR CONTEXT
+
+This modification was triggered from the visual editor. The user selected a specific UI element and requested changes to it.
+
+**Visual context provided:**
+{visual_context_str}
+
+When applying this change:
+1. **Find the React component** that renders the element matching the CSS classes and text content above
+2. **Apply ONLY the specified style changes** — use Tailwind CSS utility classes (not inline styles) where possible
+3. **Preserve all other code**, state management, props, and logic unchanged
+4. **Modify the minimal number of files** — usually just 1 component file
+5. If a Tailwind class equivalent exists for the style change, use it (e.g. `bg-blue-500` not `backgroundColor: '#3B82F6'`)
+"""
+
 
 # =============================================================================
 # LLM Configuration
@@ -252,6 +268,20 @@ async def plan_node(
     if state.get("file_system"):
         logger.info("plan_node: DELTA mode - existing files detected")
         system_prompt += DELTA_PLANNING_INSTRUCTION
+
+    # Check if this modification came from the visual editor
+    visual_context = state.get("visual_context")
+    if visual_context:
+        logger.info("plan_node: Visual editor context detected, adding targeted edit instructions")
+        vc = visual_context
+        changes_str = "\n".join([f"  - {k}: {v}" for k, v in vc.get("changes", {}).items()])
+        visual_context_str = (
+            f"Element: <{vc.get('element_tag', 'unknown')}> "
+            f"class=\"{vc.get('element_classes', '')}\" "
+            f"text=\"{vc.get('element_text', '')}\"\n"
+            f"Style changes:\n{changes_str if changes_str else '  (none — see NL request)'}"
+        )
+        system_prompt += VISUAL_EDIT_INSTRUCTION.format(visual_context_str=visual_context_str)
 
     # --- Load conversation memory ---
     memory = get_memory()

@@ -102,12 +102,14 @@ DEBUGGER_PROMPT = """You are the Debugger, a senior frontend engineer specialize
 Analyze build error logs and generate specific fix tasks that can be executed by the code generation system.
 
 ## CRITICAL: Available Shadcn UI components
-ONLY these files exist in @/components/ui/: button, card, input, label, badge, dialog, skeleton, table.
+ONLY these files exist in @/components/ui/: alert, alert-dialog, avatar, badge, button, card, checkbox,
+dialog, dropdown-menu, input, label, progress, scroll-area, select, separator, sheet, skeleton, switch,
+table, tabs, textarea, toast, tooltip.
 If an import references ANY other path like @/components/ui/header, @/components/ui/footer,
-@/components/ui/navbar, @/components/ui/dropdown-menu, @/components/ui/select, @/components/ui/tabs,
-@/components/ui/sheet, @/components/ui/avatar, @/components/ui/toast — the fix is to MODIFY the file
+@/components/ui/navbar, @/components/ui/sidebar, @/components/ui/accordion, @/components/ui/popover,
+@/components/ui/slider, @/components/ui/radio-group — the fix is to MODIFY the file
 that contains the import to remove it and create a custom component in components/ instead.
-Never try to generate a missing Shadcn component — only these 8 exist.
+Never try to generate a missing Shadcn component — only these 23 exist.
 
 ## Common Next.js 15 Error Patterns
 
