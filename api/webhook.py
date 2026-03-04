@@ -19,6 +19,7 @@ from typing import Any, Dict, List, Literal, Optional
 
 import httpx
 from dotenv import load_dotenv
+from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException, Header, Request, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
@@ -33,9 +34,56 @@ load_dotenv()
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Global Memory Checkpointer (Fallback)
-# Used when Redis is not configured, to enable HITL within the same process
+# Shared in-process checkpointer (fallback when Redis is unavailable)
 _memory_checkpointer = MemorySaver()
+
+# Compiled graph cache: avoids recompiling the LangGraph graph on every request
+_compiled_graphs: Dict[str, Any] = {}
+
+# Redis checkpointer singleton (initialised once in lifespan)
+_redis_checkpointer: Optional[Any] = None
+
+# Ably REST singleton
+_ably_rest_client: Optional[AblyRest] = None
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Pre-warm expensive singletons at startup — not per request."""
+    global _redis_checkpointer, _ably_rest_client
+
+    # Pre-load template files (blocking I/O done once here, not on first request)
+    try:
+        from agent.template_manager import get_template_manager
+        get_template_manager()
+        logger.info("lifespan: templates pre-loaded")
+    except Exception as exc:
+        logger.warning(f"lifespan: template pre-load skipped — {exc}")
+
+    # Redis checkpointer singleton
+    redis_url = os.getenv("REDIS_URL")
+    if redis_url:
+        try:
+            from langgraph.checkpoint.redis.aio import AsyncRedisSaver
+            _redis_checkpointer = AsyncRedisSaver.from_conn_info(url=redis_url)
+            logger.info("lifespan: Redis checkpointer ready")
+        except Exception as exc:
+            logger.warning(f"lifespan: Redis unavailable — {exc}")
+
+    # Ably REST singleton
+    api_key = os.getenv("ABLY_API_KEY")
+    if api_key:
+        try:
+            _ably_rest_client = AblyRest(
+                api_key, use_binary_protocol=False, log_level="WARNING"
+            )
+            logger.info("lifespan: Ably REST client ready")
+        except Exception as exc:
+            logger.warning(f"lifespan: Ably init skipped — {exc}")
+
+    yield  # server is live
+    logger.info("lifespan: shutdown")
+
 
 # =============================================================================
 # FastAPI Application
@@ -45,6 +93,7 @@ app = FastAPI(
     title="Antigravity Agent Webhook API",
     description="Receive build status callbacks from external containers",
     version="0.4.0",
+    lifespan=lifespan,
 )
 
 # Add CORS middleware
@@ -164,27 +213,23 @@ class FilesResponse(BaseModel):
 # =============================================================================
 
 def get_ably_client() -> Optional[AblyRest]:
-    """Get configured Ably REST client for publishing status updates.
+    """Return the Ably REST singleton, initializing on first call."""
+    global _ably_rest_client
+    if _ably_rest_client is not None:
+        return _ably_rest_client
 
-    Includes SSL certificate configuration for macOS compatibility.
-    """
     api_key = os.getenv("ABLY_API_KEY")
     if not api_key:
         logger.warning("ABLY_API_KEY not configured")
         return None
 
     try:
-        import certifi
-        ssl_verify = certifi.where()
-    except ImportError:
-        ssl_verify = True
-
-    try:
-        return AblyRest(
+        _ably_rest_client = AblyRest(
             api_key,
             use_binary_protocol=False,
-            log_level="WARNING"
+            log_level="WARNING",
         )
+        return _ably_rest_client
     except Exception as e:
         logger.error(f"Failed to initialize Ably client: {e}")
         return None
@@ -453,48 +498,21 @@ async def run_generation_task(
         # Publish started status
         await publish_to_ably(job_id, "started", "AI service processing request", progress=10)
 
-        # Create checkpointer (Redis or Global Memory Fallback)
-        checkpointer = None
-        redis_url = os.getenv("UPSTASH_REDIS_REST_URL")
+        # Use the global singletons set during lifespan startup
+        checkpointer = _redis_checkpointer if _redis_checkpointer is not None else _memory_checkpointer
+        skip_approval = False
+        logger.info(f"Using checkpointer: {type(checkpointer).__name__}")
 
-        try:
-            # Check for Redis URL (env var REDIS_URL preferred for standard redis)
-            redis_conn_url = os.getenv("REDIS_URL")
-
-            if redis_conn_url:
-                from langgraph.checkpoint.redis.aio import AsyncRedisSaver
-                checkpointer = AsyncRedisSaver.from_conn_info(
-                    url=redis_conn_url)
-                logger.info("Using Redis checkpointer for persistence")
-            else:
-                # Fallback to Memory implementation for session-based HITL
-                # This enables approval flow without external Redis
-                logger.warning(
-                    "No REDIS_URL found. Using In-Memory Checkpointer (session-only persistence).")
-                checkpointer = _memory_checkpointer
-
-        except Exception as e:
-            logger.warning(
-                f"Failed to create Redis saver: {e}. Using MemorySaver.")
-            checkpointer = _memory_checkpointer
-
-        # Create graph - Do NOT skip approval since we have a checkpointer (either Redis or Memory)
-        # This enables the HITL flow
-        skip_approval = checkpointer is None
-
-        # Log mode
-        if skip_approval:
-            logger.warning(
-                "Building graph with skip_approval=True (NO Persistence/HITL)")
-        else:
-            logger.info(
-                f"Building graph with HITL enabled (Checkpointer: {type(checkpointer).__name__})")
-
-        graph = create_antigravity_graph(
-            checkpointer=checkpointer,
-            enable_reflexion=False,
-            skip_approval=skip_approval
-        )
+        # Cache compiled graphs — prevents recompiling the LangGraph graph on every request
+        graph_key = f"{type(checkpointer).__name__}_noreflex_hitl"
+        if graph_key not in _compiled_graphs:
+            logger.info(f"Compiling LangGraph graph (key={graph_key})...")
+            _compiled_graphs[graph_key] = create_antigravity_graph(
+                checkpointer=checkpointer,
+                enable_reflexion=False,
+                skip_approval=skip_approval,
+            )
+        graph = _compiled_graphs[graph_key]
 
         # Prepare initial state
         initial_state = get_initial_state(
