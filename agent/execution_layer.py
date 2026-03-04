@@ -11,6 +11,8 @@ of the Antigravity workflow, executing after human approval.
 """
 
 from __future__ import annotations
+from agent.codebase_analyzer import CodebaseAnalyzer
+from agent.code_validator import validate_file
 
 import asyncio
 import json
@@ -32,11 +34,33 @@ from agent.state_engine import AgentState
 load_dotenv()
 
 # Import code validation and analysis
-from agent.code_validator import validate_file
-from agent.codebase_analyzer import CodebaseAnalyzer
 
 # Configure logging
 logger = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# Ably REST singleton
+# AblyRealtime opens a WebSocket per call (slow + SSL failures on macOS).
+# AblyRest uses plain HTTPS and is safe to reuse across async tasks.
+# ---------------------------------------------------------------------------
+_ably_rest: Optional[Any] = None
+
+
+def _get_ably_rest_channel(channel_name: str) -> Optional[Any]:
+    """Return an Ably REST channel, lazily initializing the singleton."""
+    global _ably_rest
+    if _ably_rest is None:
+        api_key = os.getenv("ABLY_API_KEY")
+        if not api_key:
+            return None
+        try:
+            from ably import AblyRest
+            _ably_rest = AblyRest(
+                api_key, use_binary_protocol=False, log_level="WARNING")
+        except Exception as exc:
+            logger.warning(f"Ably REST init failed: {exc}")
+            return None
+    return _ably_rest.channels.get(channel_name)
 
 
 # =============================================================================
@@ -334,7 +358,8 @@ class SearchNextjsDocsInput(BaseModel):
 
 class GetShadcnComponentInput(BaseModel):
     """Input schema for get_shadcn_component tool."""
-    component_name: str = Field(description="Name of the Shadcn component (e.g., 'Button', 'Card')")
+    component_name: str = Field(
+        description="Name of the Shadcn component (e.g., 'Button', 'Card')")
     include_variants: bool = Field(
         default=True,
         description="Whether to include component variants"
@@ -343,19 +368,19 @@ class GetShadcnComponentInput(BaseModel):
 
 class MockNextjsDocsTool(BaseTool):
     """Mock tool for searching Next.js documentation."""
-    
+
     name: str = "search_nextjs_docs"
     description: str = "Search Next.js 15 documentation for patterns, APIs, and best practices"
     args_schema: type[BaseModel] = SearchNextjsDocsInput
-    
+
     def _run(self, query: str, topic: Optional[str] = None) -> str:
         """Synchronous run - returns documentation snippets."""
         return self._get_docs(query, topic)
-    
+
     async def _arun(self, query: str, topic: Optional[str] = None) -> str:
         """Async run - returns documentation snippets."""
         return self._get_docs(query, topic)
-    
+
     def _get_docs(self, query: str, topic: Optional[str]) -> str:
         """Get mock documentation based on query."""
         docs = {
@@ -436,33 +461,33 @@ const res = await fetch('https://api.example.com/data', { next: { tags: ['produc
 ```
 """,
         }
-        
+
         if topic and topic in docs:
             return docs[topic]
-        
+
         # Search across all docs
         for key, doc in docs.items():
             if query.lower() in key or query.lower() in doc.lower():
                 return doc
-        
+
         return f"No specific documentation found for '{query}'. Use standard Next.js 15 patterns."
 
 
 class MockShadcnComponentTool(BaseTool):
     """Mock tool for getting Shadcn UI component patterns."""
-    
+
     name: str = "get_shadcn_component"
     description: str = "Get Shadcn UI component usage patterns and variants"
     args_schema: type[BaseModel] = GetShadcnComponentInput
-    
+
     def _run(self, component_name: str, include_variants: bool = True) -> str:
         """Synchronous run."""
         return self._get_component(component_name, include_variants)
-    
+
     async def _arun(self, component_name: str, include_variants: bool = True) -> str:
         """Async run."""
         return self._get_component(component_name, include_variants)
-    
+
     def _get_component(self, component_name: str, include_variants: bool) -> str:
         """Get component pattern."""
         components = {
@@ -631,11 +656,11 @@ import {
 ```
 """,
         }
-        
+
         key = component_name.lower()
         if key in components:
             return components[key]
-        
+
         return f"Component '{component_name}' not found. Available: {', '.join(components.keys())}"
 
 
@@ -646,22 +671,22 @@ import {
 class MCPWrapper:
     """
     Wrapper for MCP (Model Context Protocol) tool access.
-    
+
     This class provides access to documentation and component tools,
     either via a real MCP server or mock implementations for testing.
-    
+
     Attributes:
         tools: List of available tools (mock or real MCP)
         mcp_available: Whether a real MCP server is connected
     """
-    
+
     def __init__(self):
         """Initialize the MCP wrapper state."""
         self.mcp_available = False
         self.tools: List[BaseTool] = []
         self._initialized = False
         self.client = None
-    
+
     async def initialize(self) -> None:
         """
         Asynchronously set up MCP tools.
@@ -669,51 +694,54 @@ class MCPWrapper:
         """
         if self._initialized:
             return
-            
+
         mcp_servers_config = os.getenv("MCP_SERVERS_CONFIG")
         mcp_url = os.getenv("MCP_DOCS_SERVER_URL")
         mcp_command = os.getenv("MCP_DOCS_SERVER_COMMAND")
-        
+
         if mcp_servers_config or mcp_url or mcp_command:
             try:
                 from langchain_mcp_adapters.client import MultiServerMCPClient
-                
+
                 servers = {}
-                
+
                 # Priority 1: Multi-server JSON config
                 if mcp_servers_config:
                     try:
                         config_data = json.loads(mcp_servers_config)
                         for name, config in config_data.items():
                             logger.info(f"Configuring MCP server '{name}'")
-                            
+
                             # Handle command args if simple string
                             if "command" in config and "args" not in config:
                                 parts = config["command"].split()
                                 config["command"] = parts[0]
                                 config["args"] = parts[1:]
-                            
+
                             # Ensure transport is set (default to stdio if command is present)
                             if "transport" not in config:
                                 if "command" in config:
                                     config["transport"] = "stdio"
                                 elif "url" in config:
                                     config["transport"] = "sse"
-                            
+
                             servers[name] = config
                     except json.JSONDecodeError as e:
-                        logger.error(f"Failed to parse MCP_SERVERS_CONFIG: {e}")
-                
+                        logger.error(
+                            f"Failed to parse MCP_SERVERS_CONFIG: {e}")
+
                 # Priority 2: Legacy single server config (only if not in servers)
                 if not servers:
                     if mcp_url:
-                        logger.info(f"Connecting to MCP server via SSE at {mcp_url}")
+                        logger.info(
+                            f"Connecting to MCP server via SSE at {mcp_url}")
                         servers["docs_server"] = {
                             "url": mcp_url,
                             "transport": "sse",
                         }
                     elif mcp_command:
-                        logger.info(f"Connecting to local MCP server via Stdio: {mcp_command}")
+                        logger.info(
+                            f"Connecting to local MCP server via Stdio: {mcp_command}")
                         # Split command if it's a string
                         cmd_parts = mcp_command.split()
                         servers["docs_server"] = {
@@ -721,26 +749,29 @@ class MCPWrapper:
                             "args": cmd_parts[1:],
                             "transport": "stdio",
                         }
-                
+
                 if servers:
                     self.client = MultiServerMCPClient(servers)
                     # MultiServerMCPClient.get_tools is an async method
                     self.tools = await self.client.get_tools()
                     self.mcp_available = True
-                    logger.info(f"Successfully connected to {len(servers)} MCP servers. Found {len(self.tools)} tools.")
+                    logger.info(
+                        f"Successfully connected to {len(servers)} MCP servers. Found {len(self.tools)} tools.")
                 else:
-                    logger.warning("No valid MCP servers configured. Falling back to mocks.")
+                    logger.warning(
+                        "No valid MCP servers configured. Falling back to mocks.")
                     self._setup_mock_tools()
-                
+
             except Exception as e:
-                logger.warning(f"Failed to connect to real MCP server: {e}. Falling back to mocks.")
+                logger.warning(
+                    f"Failed to connect to real MCP server: {e}. Falling back to mocks.")
                 self._setup_mock_tools()
         else:
             logger.info("No MCP server configuration found. Using mock tools.")
             self._setup_mock_tools()
-            
+
         self._initialized = True
-    
+
     def _setup_mock_tools(self) -> None:
         """Set up mock tools for offline operation."""
         self.tools = [
@@ -748,26 +779,26 @@ class MCPWrapper:
             MockShadcnComponentTool(),
         ]
         self.mcp_available = False
-    
+
     def get_tools(self) -> List[BaseTool]:
         """Get list of available tools. Returns mock tools if not initialized."""
         if not self.tools and not self._initialized:
             self._setup_mock_tools()
         return self.tools
-    
+
     def should_use_tools(self, task: Dict[str, Any]) -> bool:
         """
         Determine if a task should use documentation tools.
-        
+
         Args:
             task: Implementation task with description.
-        
+
         Returns:
             True if task involves Shadcn or Server Actions.
         """
         description = task.get("description", "").lower()
         file_path = task.get("file_path", "").lower()
-        
+
         tool_keywords = [
             "shadcn",
             "server action",
@@ -780,7 +811,7 @@ class MCPWrapper:
             "component",
             "ui/",
         ]
-        
+
         return any(kw in description or kw in file_path for kw in tool_keywords)
 
 
@@ -793,11 +824,11 @@ async def get_mcp_wrapper() -> MCPWrapper:
     global _mcp_wrapper
     if _mcp_wrapper is None:
         _mcp_wrapper = MCPWrapper()
-    
+
     # Ensure it's initialized (async)
     if not _mcp_wrapper._initialized:
         await _mcp_wrapper.initialize()
-        
+
     return _mcp_wrapper
 
 
@@ -849,16 +880,12 @@ async def publish_tool_use(
         return False
 
     try:
-        from ably import AblyRealtime
-
-        api_key = os.getenv("ABLY_API_KEY")
-        if not api_key:
-            return False
-
-        channel_prefix = os.getenv("ABLY_CHANNEL_PREFIX", "ai-backend-generation")
+        channel_prefix = os.getenv(
+            "ABLY_CHANNEL_PREFIX", "ai-backend-generation")
         channel_name = f"{channel_prefix}:{thread_id}"
-        client = AblyRealtime(api_key)
-        channel = client.channels.get(channel_name)
+        channel = _get_ably_rest_channel(channel_name)
+        if channel is None:
+            return False
 
         payload = {
             "status": "tool_use",
@@ -876,7 +903,6 @@ async def publish_tool_use(
             payload["task_index"] = task_index
 
         await channel.publish("status", payload)
-        await client.close()
         return True
     except Exception as e:
         logger.warning(f"Failed to publish tool_use event: {e}")
@@ -957,24 +983,43 @@ def _build_tool_payloads(
         if generic_payload:
             payloads.append(generic_payload)
 
-    payloads.extend([{"query": query}, {"q": query}, query])
+    # Only add dict payloads for tools with JSON schema (args_schema)
+    # String payloads are not allowed for tools with schema validation
+    payloads.extend([{"query": query}, {"q": query}])
+    # Only add bare string payload if tool doesn't have args_schema
+    if not hasattr(tool, "args_schema") or tool.args_schema is None:
+        payloads.append(query)
     return payloads
 
 
 async def _invoke_tool_best_effort(tool: BaseTool, payloads: List[Any]) -> Tuple[Optional[str], Optional[str], Optional[Dict[str, Any]]]:
-    """Try multiple payload shapes to accommodate varied MCP tool schemas."""
+    """Try multiple payload shapes to accommodate varied MCP tool schemas.
+
+    Filters out string payloads for tools with JSON schema validation,
+    since such tools require dictionary arguments.
+    """
     last_error: Optional[Exception] = None
 
+    # Tools with args_schema don't accept string payloads
+    has_json_schema = hasattr(tool, "args_schema") and tool.args_schema is not None
+
     for payload in payloads:
+        # Skip string payloads for tools with JSON schema
+        if not isinstance(payload, dict) and has_json_schema:
+            continue
+
         try:
             if hasattr(tool, "ainvoke"):
                 result = await tool.ainvoke(payload)
             elif isinstance(payload, dict):
-                result = await tool._arun(**payload)  # type: ignore[attr-defined]
+                # type: ignore[attr-defined]
+                result = await tool._arun(**payload)
             else:
-                result = await tool._arun(payload)  # type: ignore[attr-defined]
+                # type: ignore[attr-defined]
+                result = await tool._arun(payload)
 
-            used_args = payload if isinstance(payload, dict) else {"query": str(payload)}
+            used_args = payload if isinstance(payload, dict) else {
+                "query": str(payload)}
             return str(result), None, used_args
         except Exception as e:
             last_error = e
@@ -1073,34 +1118,39 @@ async def gather_mcp_context(
     tools_used: List[str] = []
     warnings: List[str] = []
 
-    for tool in deduped_tools:
-        tool_name = getattr(tool, "name", "unknown_tool")
-        tool_categories = _classify_tool(tool)
-        topic = "server-actions" if "action" in query.lower() else "routing"
-        if "shadcn" in tool_categories:
-            topic = "components"
-        elif "github" in tool_categories:
-            topic = "known-bugs"
-
-        payloads = _build_tool_payloads(
+    # ── run all MCP tool invocations concurrently ────────────────────────────
+    async def _run_one_tool(tool: BaseTool):
+        t_name = getattr(tool, "name", "unknown_tool")
+        t_cats = _classify_tool(tool)
+        t_topic = "server-actions" if "action" in query.lower() else "routing"
+        if "shadcn" in t_cats:
+            t_topic = "components"
+        elif "github" in t_cats:
+            t_topic = "known-bugs"
+        t_payloads = _build_tool_payloads(
             tool,
             query or prompt or "nextjs shadcn best practices",
             component_name=primary_component,
-            topic=topic,
+            topic=t_topic,
         )
-
         await publish_tool_use(
-            thread_id=thread_id,
-            phase=phase,
-            tool_name=tool_name,
-            message=f"Using MCP tool {tool_name}",
-            success=True,
-            args={"topic": topic},
-            file_path=file_path,
-            task_index=task_index,
+            thread_id=thread_id, phase=phase, tool_name=t_name,
+            message=f"Using MCP tool {t_name}", success=True,
+            args={"topic": t_topic}, file_path=file_path, task_index=task_index,
         )
+        t_result, t_error, t_used_args = await _invoke_tool_best_effort(tool, t_payloads)
+        return t_name, t_topic, t_result, t_error, t_used_args
 
-        result, error, used_args = await _invoke_tool_best_effort(tool, payloads)
+    tool_outputs = await asyncio.gather(
+        *[_run_one_tool(t) for t in deduped_tools],
+        return_exceptions=True,
+    )
+
+    for output in tool_outputs:
+        if isinstance(output, BaseException):
+            warnings.append(f"Tool raised unexpectedly: {output}")
+            continue
+        tool_name, _topic, result, error, used_args = output
         if result:
             tools_used.append(tool_name)
             excerpt = result.strip()
@@ -1108,30 +1158,20 @@ async def gather_mcp_context(
                 excerpt = excerpt[:1200] + "..."
             references.append(f"[{tool_name}] {excerpt}")
             await publish_tool_use(
-                thread_id=thread_id,
-                phase=phase,
-                tool_name=tool_name,
-                message=f"MCP tool {tool_name} completed",
-                success=True,
-                args=used_args or {},
-                file_path=file_path,
-                task_index=task_index,
+                thread_id=thread_id, phase=phase, tool_name=tool_name,
+                message=f"MCP tool {tool_name} completed", success=True,
+                args=used_args or {}, file_path=file_path, task_index=task_index,
             )
         else:
             warning = f"{tool_name} unavailable: {error or 'Unknown error'}"
             warnings.append(warning)
             logger.warning(f"gather_mcp_context: {warning}")
             await publish_tool_use(
-                thread_id=thread_id,
-                phase=phase,
-                tool_name=tool_name,
-                message=warning,
-                success=False,
-                warning=warning,
-                args=used_args or {},
-                file_path=file_path,
-                task_index=task_index,
+                thread_id=thread_id, phase=phase, tool_name=tool_name,
+                message=warning, success=False, warning=warning,
+                args=used_args or {}, file_path=file_path, task_index=task_index,
             )
+    # ── end parallel MCP block ───────────────────────────────────────────────
 
     return {
         "references": references[:max_references],
@@ -1151,14 +1191,14 @@ def get_generation_llm(
 ) -> ChatOpenAI:
     """
     Get a configured LLM instance for code generation.
-    
+
     Supports both Azure OpenAI and standard OpenAI based on environment variables.
     Checks for Azure config first, then falls back to standard OpenAI.
-    
+
     Args:
         temperature: Sampling temperature. Slightly higher for creative code.
         streaming: Whether to enable streaming.
-    
+
     Returns:
         Configured ChatOpenAI or AzureChatOpenAI instance.
     """
@@ -1167,12 +1207,13 @@ def get_generation_llm(
     azure_key = os.getenv("AZURE_OPENAI_API_KEY")
     azure_deployment = os.getenv("AZURE_OPENAI_DEPLOYMENT_NAME", "gpt-4o")
     azure_version = os.getenv("AZURE_OPENAI_API_VERSION", "2025-01-01-preview")
-    
+
     if azure_endpoint and azure_key:
         try:
             from langchain_openai import AzureChatOpenAI
-            
-            logger.info(f"Using Azure OpenAI for generation: {azure_deployment}")
+
+            logger.info(
+                f"Using Azure OpenAI for generation: {azure_deployment}")
             return AzureChatOpenAI(
                 azure_endpoint=azure_endpoint,
                 api_key=azure_key,
@@ -1182,8 +1223,9 @@ def get_generation_llm(
                 streaming=streaming,
             )
         except ImportError:
-            logger.warning("AzureChatOpenAI not available, falling back to OpenAI")
-    
+            logger.warning(
+                "AzureChatOpenAI not available, falling back to OpenAI")
+
     # Fall back to standard OpenAI
     api_key = os.getenv("OPENAI_API_KEY")
     if not api_key:
@@ -1191,7 +1233,7 @@ def get_generation_llm(
             "Neither Azure OpenAI nor OpenAI API key is configured. "
             "Set AZURE_OPENAI_ENDPOINT + AZURE_OPENAI_API_KEY or OPENAI_API_KEY."
         )
-    
+
     logger.info("Using standard OpenAI API for generation")
     return ChatOpenAI(
         model="gpt-4o",
@@ -1227,16 +1269,11 @@ async def publish_file_generated(
         True if published successfully.
     """
     try:
-        from ably import AblyRealtime
-
-        api_key = os.getenv("ABLY_API_KEY")
-        if not api_key:
-            logger.warning("ABLY_API_KEY not set, skipping file_generated publish")
+        channel = _get_ably_rest_channel(f"ai-backend-generation:{thread_id}")
+        if channel is None:
+            logger.warning(
+                "Ably not configured, skipping file_generated publish")
             return False
-
-        client = AblyRealtime(api_key)
-        channel_name = f"ai-backend-generation:{thread_id}"
-        channel = client.channels.get(channel_name)
 
         await channel.publish("file_generated", {
             "file_path": file_path,
@@ -1247,13 +1284,14 @@ async def publish_file_generated(
             "progress": int(((task_index + 1) / total_tasks) * 100) if total_tasks else 0,
             "message": f"Generated {file_path} ({task_index + 1}/{total_tasks})",
         })
-        await client.close()
 
-        logger.info(f"Published file_generated for {file_path} ({task_index + 1}/{total_tasks})")
+        logger.info(
+            f"Published file_generated for {file_path} ({task_index + 1}/{total_tasks})")
         return True
 
     except ImportError:
-        logger.warning("Ably package not installed, skipping file_generated publish")
+        logger.warning(
+            "Ably package not installed, skipping file_generated publish")
         return False
     except Exception as e:
         logger.error(f"Failed to publish file_generated: {e}")
@@ -1310,7 +1348,8 @@ async def stream_file_to_backend(
                     return True
                 else:
                     text = await response.text()
-                    logger.error(f"Failed to stream {file_path}: status {response.status} - {text}")
+                    logger.error(
+                        f"Failed to stream {file_path}: status {response.status} - {text}")
                     return False
 
     except ImportError:
@@ -1352,8 +1391,10 @@ async def modification_analysis_node(
             analyzer.analyze_files(state["file_system"])
 
             # Find affected files based on modification request
-            modification_request = state.get("user_message", state.get("query", ""))
-            affected_files = analyzer.find_affected_files(modification_request, state["file_system"])
+            modification_request = state.get(
+                "user_message", state.get("query", ""))
+            affected_files = analyzer.find_affected_files(
+                modification_request, state["file_system"])
 
             # Get codebase summary for LLM context
             codebase_summary = analyzer.get_file_summary()
@@ -1365,7 +1406,8 @@ async def modification_analysis_node(
             }
 
             logger.info(f"Found {len(affected_files)} affected files")
-            logger.info(f"File impacts: {json.dumps(file_impacts, default=str, indent=2)}")
+            logger.info(
+                f"File impacts: {json.dumps(file_impacts, default=str, indent=2)}")
 
             # Publish progress to Ably
             if state.get("thread_id"):
@@ -1428,14 +1470,17 @@ async def modification_planning_node(
     try:
         analysis = state.get("modification_analysis", {})
         affected_files = analysis.get("affected_files", [])
-        thread_id = config.get("configurable", {}).get("thread_id", "") if config else ""
-        modification_request = state.get("user_message", state.get("query", ""))
+        thread_id = config.get("configurable", {}).get(
+            "thread_id", "") if config else ""
+        modification_request = state.get(
+            "user_message", state.get("query", ""))
 
         mcp_context = await gather_mcp_context(
             phase="modification",
             prompt=modification_request,
             manifest=state.get("manifest", {}),
-            task={"description": modification_request, "file_path": ",".join(affected_files[:2])},
+            task={"description": modification_request,
+                  "file_path": ",".join(affected_files[:2])},
             thread_id=thread_id,
             max_references=2,
         )
@@ -1449,7 +1494,8 @@ async def modification_planning_node(
 
         # Build modification instruction for the generator
         modification_targets = []
-        for file_path in affected_files[:5]:  # Limit to top 5 to avoid token explosion
+        # Limit to top 5 to avoid token explosion
+        for file_path in affected_files[:5]:
             file_impact = analysis.get("file_impacts", {}).get(file_path, {})
             scope = file_impact.get("impact_scope", 0)
 
@@ -1457,12 +1503,14 @@ async def modification_planning_node(
                 "file_path": file_path,
                 "operation": "modify",  # vs "create" or "delete"
                 "scope": scope,
-                "dependencies": file_impact.get("imported_by", [])[:3],  # Top 3 dependents
+                # Top 3 dependents
+                "dependencies": file_impact.get("imported_by", [])[:3],
                 "mcp_tools_used": mcp_context.get("tools_used", []),
                 "requires_shadcn": infer_shadcn_components_from_text(modification_request),
             })
 
-        logger.info(f"Created modification targets for {len(modification_targets)} files")
+        logger.info(
+            f"Created modification targets for {len(modification_targets)} files")
 
         # Publish plan to Ably
         if state.get("thread_id"):
@@ -1540,7 +1588,8 @@ async def generation_node(
 
     # Get manifest for context
     manifest = state.get("manifest", {})
-    manifest_str = json.dumps(manifest, indent=2) if manifest else "No manifest provided"
+    manifest_str = json.dumps(
+        manifest, indent=2) if manifest else "No manifest provided"
 
     # Extract component signatures from existing codebase
     component_signatures = ""
@@ -1549,9 +1598,11 @@ async def generation_node(
         analyzer.analyze_files(file_system)
         component_signatures = analyzer.get_component_signature_string()
         if component_signatures and "No custom components" not in component_signatures:
-            logger.info(f"generation_node: Extracted {len(analyzer.components)} component signatures")
+            logger.info(
+                f"generation_node: Extracted {len(analyzer.components)} component signatures")
     except Exception as e:
-        logger.warning(f"generation_node: Could not extract component signatures: {e}")
+        logger.warning(
+            f"generation_node: Could not extract component signatures: {e}")
         component_signatures = ""
 
     # Get template files to exclude from generation
@@ -1581,19 +1632,23 @@ async def generation_node(
         description = task.get("description", "")
 
         if not file_path:
-            logger.warning(f"generation_node: Task {task_id} has no file_path, skipping")
+            logger.warning(
+                f"generation_node: Task {task_id} has no file_path, skipping")
             build_logs.append(f"Skipped task {task_id}: no file path")
             continue
 
         # Hard block: skip protected files entirely (safety net)
         if file_path in PROTECTED_FILES:
-            logger.warning(f"generation_node: BLOCKED modification of protected file {file_path}")
-            build_logs.append(f"BLOCKED: Cannot modify protected file {file_path}")
+            logger.warning(
+                f"generation_node: BLOCKED modification of protected file {file_path}")
+            build_logs.append(
+                f"BLOCKED: Cannot modify protected file {file_path}")
             continue
 
         # Skip template files - they were already uploaded in Phase 1
         if file_path in template_paths and task_type == "create":
-            logger.info(f"generation_node: Skipping template file {file_path} (already uploaded)")
+            logger.info(
+                f"generation_node: Skipping template file {file_path} (already uploaded)")
             build_logs.append(f"Skipped: {file_path} (from template)")
             continue
 
@@ -1605,7 +1660,8 @@ async def generation_node(
                 logger.info(f"generation_node: Deleted {file_path}")
             continue
 
-        logger.info(f"generation_node: Processing {task_id} - {task_type} {file_path}")
+        logger.info(
+            f"generation_node: Processing {task_id} - {task_type} {file_path}")
 
         # Build the prompt
         system_prompt = BUILDER_PROMPT
@@ -1692,12 +1748,15 @@ Never invent component prop signatures - only use components as defined.
             )
             if mcp_context["references"]:
                 messages.append(
-                    HumanMessage(content="## MCP References\n" + "\n\n".join(mcp_context["references"]))
+                    HumanMessage(content="## MCP References\n" +
+                                 "\n\n".join(mcp_context["references"]))
                 )
             if mcp_context["warnings"]:
-                build_logs.extend([f"MCP warning ({file_path}): {w}" for w in mcp_context["warnings"][:2]])
+                build_logs.extend(
+                    [f"MCP warning ({file_path}): {w}" for w in mcp_context["warnings"][:2]])
             if mcp_context["tools_used"]:
-                task["mcp_tools_used"] = sorted(set(task.get("mcp_tools_used", []) + mcp_context["tools_used"]))
+                task["mcp_tools_used"] = sorted(
+                    set(task.get("mcp_tools_used", []) + mcp_context["tools_used"]))
 
             # Generate the code
             response = await llm.ainvoke(messages, config=config)
@@ -1749,7 +1808,8 @@ Never invent component prop signatures - only use components as defined.
             logger.error(f"generation_node: {error_msg}")
             build_logs.append(f"Error: {error_msg}")
 
-    logger.info(f"generation_node: Completed. Generated {len(file_system)} files, streamed {files_streamed}.")
+    logger.info(
+        f"generation_node: Completed. Generated {len(file_system)} files, streamed {files_streamed}.")
 
     return {
         "file_system": file_system,
@@ -1770,40 +1830,41 @@ Never invent component prop signatures - only use components as defined.
 async def request_sas_token(container_name: str) -> Optional[Dict[str, Any]]:
     """
     Request a SAS token from the backend for Azure Blob Storage uploads.
-    
+
     This allows the Agent to upload files without storing Azure credentials locally,
     and avoids SSL certificate verification issues.
-    
+
     Args:
         container_name: Name of the Azure container to upload to
-        
+
     Returns:
         Dict with sasUrl, containerUrl, expiresOn, etc., or None if failed
     """
     backend_url = os.getenv("BACKEND_URL", "http://localhost:4000")
     webhook_secret = os.getenv("FASTAPI_WEBHOOK_SECRET")
-    
+
     if not webhook_secret:
-        logger.warning("FASTAPI_WEBHOOK_SECRET not set. Cannot authenticate SAS token request.")
+        logger.warning(
+            "FASTAPI_WEBHOOK_SECRET not set. Cannot authenticate SAS token request.")
         return None
-    
+
     try:
         import aiohttp
-        
+
         endpoint = f"{backend_url}/api/v1/azure/sas-token"
         payload = {
             "containerName": container_name,
             "expiresInMinutes": 60,
             "permissions": "racwdl"  # read, add, create, write, delete, list
         }
-        
+
         headers = {
             "Authorization": f"Bearer {webhook_secret}",
             "Content-Type": "application/json"
         }
-        
+
         logger.info(f"Requesting SAS token from {endpoint}")
-        
+
         async with aiohttp.ClientSession() as session:
             async with session.post(endpoint, json=payload, headers=headers, timeout=10) as response:
                 if response.status == 200:
@@ -1812,13 +1873,15 @@ async def request_sas_token(container_name: str) -> Optional[Dict[str, Any]]:
                         logger.info("Successfully obtained SAS token")
                         return data.get("data")
                     else:
-                        logger.error(f"SAS token request failed: {data.get('error')}")
+                        logger.error(
+                            f"SAS token request failed: {data.get('error')}")
                         return None
                 else:
                     text = await response.text()
-                    logger.error(f"SAS token request failed with status {response.status}: {text}")
+                    logger.error(
+                        f"SAS token request failed with status {response.status}: {text}")
                     return None
-                    
+
     except ImportError:
         logger.error("aiohttp not installed. Run: pip install aiohttp")
         return None
@@ -1861,7 +1924,8 @@ async def code_review_node(
     logger.info("code_review_node: Running code quality checks")
 
     file_system = dict(state.get("file_system", {}))
-    thread_id = config.get("configurable", {}).get("thread_id", "") if config else ""
+    thread_id = config.get("configurable", {}).get(
+        "thread_id", "") if config else ""
     build_logs = list(state.get("build_logs", []))
 
     if not file_system:
@@ -1896,7 +1960,8 @@ async def code_review_node(
         if thread_id:
             from agent.reflexion import publish_to_ably
             import os as _os
-            channel_prefix = _os.getenv("ABLY_CHANNEL_PREFIX", "ai-backend-generation")
+            channel_prefix = _os.getenv(
+                "ABLY_CHANNEL_PREFIX", "ai-backend-generation")
             await publish_to_ably(
                 f"{channel_prefix}:{thread_id}",
                 {
@@ -1921,7 +1986,8 @@ async def code_review_node(
             f"auto_fixes={summary.auto_fixes_applied}"
         )
         if mcp_advisory["warnings"]:
-            build_logs.extend([f"MCP advisory warning: {w}" for w in mcp_advisory["warnings"][:2]])
+            build_logs.extend(
+                [f"MCP advisory warning: {w}" for w in mcp_advisory["warnings"][:2]])
 
         quality_summary = summary.to_dict()
         quality_summary["mcp_tools_used"] = mcp_advisory.get("tools_used", [])
@@ -1947,7 +2013,8 @@ async def code_review_node(
         }
 
     except Exception as e:
-        logger.error(f"code_review_node: Quality review failed: {e}", exc_info=True)
+        logger.error(
+            f"code_review_node: Quality review failed: {e}", exc_info=True)
         build_logs.append(f"Code quality review error: {e}")
         return {"build_logs": build_logs}
 
@@ -1994,8 +2061,10 @@ async def persistence_node(
     project_slug = state.get("project_slug")
 
     if not org_slug or not project_slug:
-        logger.error("persistence_node: Missing org_slug or project_slug in state")
-        build_logs.append("Error: Missing organization or project slugs for file upload")
+        logger.error(
+            "persistence_node: Missing org_slug or project_slug in state")
+        build_logs.append(
+            "Error: Missing organization or project slugs for file upload")
         return {"build_ready": False, "build_logs": build_logs}
 
     files_streamed = state.get("files_streamed", 0)
@@ -2007,18 +2076,16 @@ async def persistence_node(
             f"persistence_node: All {files_streamed} files already streamed. "
             "Skipping batch upload, publishing upload_complete."
         )
-        build_logs.append(f"All {files_streamed} files streamed during generation")
+        build_logs.append(
+            f"All {files_streamed} files streamed during generation")
 
         # Publish upload_complete via Ably
         thread_id = config.get("configurable", {}).get("thread_id", "")
         if thread_id:
             try:
-                from ably import AblyRealtime
-
-                api_key = os.getenv("ABLY_API_KEY")
-                if api_key:
-                    client = AblyRealtime(api_key)
-                    channel = client.channels.get(f"ai-backend-generation:{thread_id}")
+                channel = _get_ably_rest_channel(
+                    f"ai-backend-generation:{thread_id}")
+                if channel is not None:
                     await channel.publish("upload_complete", {
                         "status": "upload_complete",
                         "message": f"All {total_files} files uploaded",
@@ -2028,10 +2095,10 @@ async def persistence_node(
                         "organization_slug": org_slug,
                         "project_slug": project_slug,
                     })
-                    await client.close()
                     logger.info("persistence_node: Published upload_complete")
             except Exception as e:
-                logger.error(f"persistence_node: Failed to publish upload_complete: {e}")
+                logger.error(
+                    f"persistence_node: Failed to publish upload_complete: {e}")
 
         return {"build_ready": True, "build_logs": build_logs}
 
@@ -2051,8 +2118,10 @@ async def persistence_node(
         for path, content in file_system.items()
     ]
 
-    logger.info(f"persistence_node: Sending {len(files_payload)} files to backend for {org_slug}/{project_slug}")
-    build_logs.append(f"Uploading {len(files_payload)} files to {org_slug}/{project_slug}")
+    logger.info(
+        f"persistence_node: Sending {len(files_payload)} files to backend for {org_slug}/{project_slug}")
+    build_logs.append(
+        f"Uploading {len(files_payload)} files to {org_slug}/{project_slug}")
 
     try:
         import aiohttp
@@ -2077,8 +2146,10 @@ async def persistence_node(
                     uploaded = result.get("uploaded", 0)
                     total = result.get("total", len(files_payload))
 
-                    logger.info(f"persistence_node: Uploaded {uploaded}/{total} files")
-                    build_logs.append(f"Uploaded {uploaded}/{total} files to Azure")
+                    logger.info(
+                        f"persistence_node: Uploaded {uploaded}/{total} files")
+                    build_logs.append(
+                        f"Uploaded {uploaded}/{total} files to Azure")
 
                     # Log any failed files
                     results = result.get("results", [])
@@ -2098,7 +2169,8 @@ async def persistence_node(
 
     except ImportError:
         logger.error("persistence_node: aiohttp package not installed")
-        build_logs.append("Error: aiohttp not installed. Run: pip install aiohttp")
+        build_logs.append(
+            "Error: aiohttp not installed. Run: pip install aiohttp")
         return {"build_ready": False, "build_logs": build_logs}
 
     except Exception as e:
@@ -2108,7 +2180,6 @@ async def persistence_node(
         return {"build_ready": False, "build_logs": build_logs}
 
 
-
 # =============================================================================
 # Utility Functions
 # =============================================================================
@@ -2116,10 +2187,10 @@ async def persistence_node(
 def list_generated_files(file_system: Dict[str, str]) -> List[Dict[str, Any]]:
     """
     Get a summary of generated files.
-    
+
     Args:
         file_system: Virtual file system dictionary.
-    
+
     Returns:
         List of file summaries with path, size, and type.
     """
@@ -2139,14 +2210,14 @@ def list_generated_files(file_system: Dict[str, str]) -> List[Dict[str, Any]]:
             file_type = "stylesheet"
         elif path.endswith(".json"):
             file_type = "config"
-        
+
         files.append({
             "path": path,
             "size": len(content),
             "lines": content.count("\n") + 1,
             "type": file_type,
         })
-    
+
     return sorted(files, key=lambda f: f["path"])
 
 
@@ -2156,29 +2227,29 @@ async def preview_generation(
 ) -> str:
     """
     Preview what would be generated for a single task.
-    
+
     Useful for testing the generation prompt without running the full pipeline.
-    
+
     Args:
         task: Single implementation task.
         existing_content: Optional existing file content for delta mode.
-    
+
     Returns:
         Generated code preview.
     """
     llm = get_generation_llm()
-    
+
     system_prompt = BUILDER_PROMPT
     if existing_content:
         system_prompt += DELTA_GENERATION_INSTRUCTION
-    
+
     user_content = f"""## Task
 {task.get("description", "No description")}
 
 ## File Path
 {task.get("file_path", "unknown.tsx")}
 """
-    
+
     if existing_content:
         user_content += f"""
 ## Current File Content
@@ -2186,11 +2257,11 @@ async def preview_generation(
 {existing_content}
 ```
 """
-    
+
     messages = [
         SystemMessage(content=system_prompt),
         HumanMessage(content=user_content),
     ]
-    
+
     response = await llm.ainvoke(messages)
     return response.content
