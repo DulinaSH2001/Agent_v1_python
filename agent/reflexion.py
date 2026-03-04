@@ -50,12 +50,12 @@ def get_debugger_llm(
 ) -> ChatOpenAI:
     """
     Get a configured LLM instance for error analysis.
-    
+
     Supports both Azure OpenAI and standard OpenAI based on environment variables.
-    
+
     Args:
         temperature: Sampling temperature. Low for precise analysis.
-    
+
     Returns:
         Configured ChatOpenAI or AzureChatOpenAI instance.
     """
@@ -63,12 +63,13 @@ def get_debugger_llm(
     azure_key = os.getenv("AZURE_OPENAI_API_KEY")
     azure_deployment = os.getenv("AZURE_OPENAI_DEPLOYMENT_NAME", "gpt-4o")
     azure_version = os.getenv("AZURE_OPENAI_API_VERSION", "2025-01-01-preview")
-    
+
     if azure_endpoint and azure_key:
         try:
             from langchain_openai import AzureChatOpenAI
-            
-            logger.info(f"Using Azure OpenAI for debugging: {azure_deployment}")
+
+            logger.info(
+                f"Using Azure OpenAI for debugging: {azure_deployment}")
             return AzureChatOpenAI(
                 azure_endpoint=azure_endpoint,
                 api_key=azure_key,
@@ -77,14 +78,15 @@ def get_debugger_llm(
                 temperature=temperature,
             )
         except ImportError:
-            logger.warning("AzureChatOpenAI not available, falling back to OpenAI")
-    
+            logger.warning(
+                "AzureChatOpenAI not available, falling back to OpenAI")
+
     api_key = os.getenv("OPENAI_API_KEY")
     if not api_key:
         raise ValueError(
             "Neither Azure OpenAI nor OpenAI API key is configured."
         )
-    
+
     return ChatOpenAI(
         model="gpt-4o",
         temperature=temperature,
@@ -439,19 +441,19 @@ class SearchGithubIssuesInput(BaseModel):
 
 class MockGithubIssuesTool(BaseTool):
     """Mock tool for searching GitHub issues for known bugs."""
-    
+
     name: str = "search_github_issues"
     description: str = "Search GitHub issues for known bugs and workarounds"
     args_schema: type[BaseModel] = SearchGithubIssuesInput
-    
+
     def _run(self, query: str, repo: str = "vercel/next.js") -> str:
         """Synchronous run."""
         return self._search(query, repo)
-    
+
     async def _arun(self, query: str, repo: str = "vercel/next.js") -> str:
         """Async run."""
         return self._search(query, repo)
-    
+
     def _search(self, query: str, repo: str) -> str:
         """Mock search results."""
         known_issues = {
@@ -485,12 +487,12 @@ class MockGithubIssuesTool(BaseTool):
 2. Disable Turbopack with `--no-turbo` flag
 """,
         }
-        
+
         query_lower = query.lower()
         for key, issue in known_issues.items():
             if key in query_lower:
                 return issue
-        
+
         return f"No known issues found for '{query}' in {repo}. This may be a project-specific error."
 
 
@@ -505,23 +507,23 @@ async def publish_to_ably(
     """
     Publish a message to an Ably channel.
     Handles SSL certificate verification issues on macOS.
-    
+
     Args:
         channel_name: The Ably channel to publish to.
         data: The data payload to publish.
-    
+
     Returns:
         True if successful, False otherwise.
     """
     try:
         from ably import AblyRealtime
         import ssl
-        
+
         api_key = os.getenv("ABLY_API_KEY")
         if not api_key:
             logger.warning("ABLY_API_KEY not set, skipping publish")
             return False
-        
+
         # Configure SSL context to handle macOS certificate issues
         try:
             import certifi
@@ -531,7 +533,7 @@ async def publish_to_ably(
         except ImportError:
             # Fallback if certifi not available
             ssl_context = ssl.create_default_context()
-        
+
         # Initialize client with SSL configuration
         client = AblyRealtime(
             api_key,
@@ -539,14 +541,14 @@ async def publish_to_ably(
             log_level="WARNING",
             _transport_kwargs={"verify": True}  # Enable SSL verification
         )
-        
+
         channel = client.channels.get(channel_name)
         await channel.publish("message", data)
         await client.close()
-        
+
         logger.info(f"Published to Ably channel {channel_name}")
         return True
-        
+
     except ImportError:
         logger.warning("Ably package not installed, skipping publish")
         return False
@@ -565,26 +567,27 @@ async def trigger_build_node(
 ) -> Dict[str, Any]:
     """
     Trigger external build and wait for result via webhook.
-    
+
     This node publishes a BUILD_REQUEST event to Ably, then interrupts
     execution to wait for the external container to send a webhook
     with the build result.
-    
+
     Args:
         state: Current agent state with file_system.
         config: Runnable configuration with thread_id.
-    
+
     Returns:
         State update with build_status and build_logs from webhook.
     """
     logger.info("trigger_build_node: Requesting external build")
-    
+
     # Extract thread_id
     thread_id = config.get("configurable", {}).get("thread_id", "unknown")
-    
+
     # Get container URL
-    container_url = os.getenv("CONTAINER_BUILD_URL", "http://localhost:3000/api/build")
-    
+    container_url = os.getenv("CONTAINER_BUILD_URL",
+                              "http://localhost:3000/api/build")
+
     # Prepare build request payload
     build_request = {
         "type": "BUILD_REQUEST",
@@ -594,14 +597,15 @@ async def trigger_build_node(
         "files": list(state.get("file_system", {}).keys()),
         "timestamp": __import__("datetime").datetime.utcnow().isoformat(),
     }
-    
+
     # Publish to Ably control channel
     channel_name = f"agent:control:{thread_id}"
     await publish_to_ably(channel_name, build_request)
-    
-    logger.info(f"trigger_build_node: Published BUILD_REQUEST to {channel_name}")
+
+    logger.info(
+        f"trigger_build_node: Published BUILD_REQUEST to {channel_name}")
     logger.info("trigger_build_node: Waiting for build result via webhook...")
-    
+
     # Interrupt and wait for webhook to resume with build result
     # The webhook will call Command(resume={status, logs})
     build_result = interrupt({
@@ -609,20 +613,21 @@ async def trigger_build_node(
         "thread_id": thread_id,
         "request": build_request,
     })
-    
+
     # Process the build result from webhook
     status = build_result.get("status", "failed")
     logs = build_result.get("logs", [])
-    
+
     if isinstance(logs, str):
         logs = [logs]
-    
-    logger.info(f"trigger_build_node: Build result received - status: {status}")
-    
+
+    logger.info(
+        f"trigger_build_node: Build result received - status: {status}")
+
     # Update build_logs with new logs
     current_logs = list(state.get("build_logs", []))
     current_logs.extend(logs)
-    
+
     return {
         "build_status": status,
         "build_logs": current_logs,
@@ -659,7 +664,8 @@ async def reflexion_node(
     """
     current_iteration = state.get("iteration_count", 0)
     build_logs = state.get("build_logs", [])
-    thread_id = config.get("configurable", {}).get("thread_id", "") if config else ""
+    thread_id = config.get("configurable", {}).get(
+        "thread_id", "") if config else ""
 
     logger.info(
         f"reflexion_node: Analyzing build errors "
@@ -673,7 +679,8 @@ async def reflexion_node(
             "Escalating to human intervention."
         )
         if thread_id:
-            channel_prefix = os.getenv("ABLY_CHANNEL_PREFIX", "ai-backend-generation")
+            channel_prefix = os.getenv(
+                "ABLY_CHANNEL_PREFIX", "ai-backend-generation")
             await publish_to_ably(
                 f"{channel_prefix}:{thread_id}",
                 {
@@ -693,9 +700,11 @@ async def reflexion_node(
 
     # --- Error categorization ---
     error_text = "\n".join(build_logs[-20:])  # Last 20 log entries
-    categories = categorize_errors(build_logs[-50:])  # Analyse more context for categorisation
+    # Analyse more context for categorisation
+    categories = categorize_errors(build_logs[-50:])
 
-    logger.info(f"reflexion_node: Error categories detected: {list(categories.keys())}")
+    logger.info(
+        f"reflexion_node: Error categories detected: {list(categories.keys())}")
 
     # Notify frontend of reflexion progress
     if thread_id:
@@ -704,7 +713,8 @@ async def reflexion_node(
             else "component restructuring" if current_iteration <= 3
             else "full rewrite"
         )
-        channel_prefix = os.getenv("ABLY_CHANNEL_PREFIX", "ai-backend-generation")
+        channel_prefix = os.getenv(
+            "ABLY_CHANNEL_PREFIX", "ai-backend-generation")
         await publish_to_ably(
             f"{channel_prefix}:{thread_id}",
             {
@@ -723,7 +733,8 @@ async def reflexion_node(
 
     # --- Build enhanced LLM prompt ---
     file_system = state.get("file_system", {})
-    existing_files = "\n".join(f"- {path}" for path in sorted(file_system.keys()))
+    existing_files = "\n".join(
+        f"- {path}" for path in sorted(file_system.keys()))
 
     # Build category-specific system prompt additions
     category_addons = ""
@@ -778,9 +789,11 @@ async def reflexion_node(
         if "turbopack" in error_lower:
             github_queries.append("turbopack")
 
-        for query in github_queries[:2]:  # Max 2 lookups to avoid excessive context
+        # Max 2 lookups to avoid excessive context
+        for query in github_queries[:2]:
             github_context = await github_tool._arun(query)
-            messages.append(HumanMessage(content=f"## Known GitHub Issues ({query})\n{github_context}"))
+            messages.append(HumanMessage(
+                content=f"## Known GitHub Issues ({query})\n{github_context}"))
 
     # --- Generate fix plan ---
     llm = get_debugger_llm()
@@ -849,20 +862,20 @@ async def reflexion_node(
 def should_fix(state: AgentState) -> Literal["end", "reflexion", "escalate"]:
     """
     Conditional edge that routes based on build status.
-    
+
     Routes:
     - "success" -> "end" (build succeeded, workflow complete)
     - "failed" -> "reflexion" (analyze errors and retry)
     - "escalate" -> "escalate" (max iterations, need human)
-    
+
     Args:
         state: Current agent state with build_status.
-    
+
     Returns:
         Next node: "end", "reflexion", or "escalate"
     """
     build_status = state.get("build_status", "pending")
-    
+
     if build_status == "success":
         logger.info("should_fix: Build SUCCESS -> end")
         return "end"
@@ -884,21 +897,21 @@ async def escalation_node(
 ) -> Dict[str, Any]:
     """
     Escalation node - pauses for human intervention.
-    
+
     This node is reached when the agent has exceeded the maximum
     number of fix attempts and needs human help.
-    
+
     Args:
         state: Current agent state.
         config: Runnable configuration.
-    
+
     Returns:
         State update after human provides guidance.
     """
     logger.info("escalation_node: Requesting human intervention")
-    
+
     thread_id = config.get("configurable", {}).get("thread_id", "unknown")
-    
+
     # Prepare escalation summary
     escalation_summary = {
         "type": "ESCALATION",
@@ -908,14 +921,14 @@ async def escalation_node(
         "files_affected": list(state.get("file_system", {}).keys()),
         "message": "Maximum auto-fix attempts reached. Please review errors and provide guidance.",
     }
-    
+
     # Publish escalation to Ably
     channel_name = f"agent:control:{thread_id}"
     await publish_to_ably(channel_name, escalation_summary)
-    
+
     # Interrupt for human input
     human_guidance = interrupt(escalation_summary)
-    
+
     # Process human guidance
     if human_guidance.get("action") == "RETRY":
         # Human wants to retry with new prompt
@@ -949,16 +962,16 @@ def get_debugger_tools() -> List[BaseTool]:
 def format_error_summary(build_logs: List[str], max_lines: int = 10) -> str:
     """
     Format build logs into a readable summary.
-    
+
     Args:
         build_logs: List of log entries.
         max_lines: Maximum lines to include.
-    
+
     Returns:
         Formatted error summary.
     """
     if not build_logs:
         return "No build logs available."
-    
+
     recent_logs = build_logs[-max_lines:]
     return "\n".join(f"  {log}" for log in recent_logs)

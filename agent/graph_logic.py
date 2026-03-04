@@ -16,6 +16,23 @@ LangGraph's interrupt/Command pattern for pause/resume capability.
 """
 
 from __future__ import annotations
+from agent.reflexion import (
+    trigger_build_node,
+    reflexion_node,
+    escalation_node,
+    should_fix,
+    DEBUGGER_PROMPT,
+    MAX_REFLEXION_ITERATIONS,
+)
+from agent.template_nodes import template_selection_node, template_upload_node
+from agent.execution_layer import (
+    generation_node,
+    persistence_node,
+    code_review_node,
+    BUILDER_PROMPT,
+    get_mcp_wrapper,
+    list_generated_files,
+)
 
 import json
 import logging
@@ -223,7 +240,8 @@ def enrich_plan_with_mcp_metadata(
         combined_text = f"{task_copy.get('description', '')} {task_copy.get('file_path', '')}"
         existing_requires = task_copy.get("requires_shadcn")
         if isinstance(existing_requires, list):
-            inferred = [str(x).strip().lower() for x in existing_requires if str(x).strip()]
+            inferred = [str(x).strip().lower()
+                        for x in existing_requires if str(x).strip()]
         else:
             inferred = infer_required_shadcn(combined_text)
 
@@ -250,14 +268,14 @@ def get_planning_llm(
 ) -> ChatOpenAI:
     """
     Get a configured LLM instance for planning.
-    
+
     Supports both Azure OpenAI and standard OpenAI based on environment variables.
     Checks for Azure config first, then falls back to standard OpenAI.
-    
+
     Args:
         temperature: Sampling temperature. Low for deterministic planning.
         streaming: Whether to enable streaming. Required for token callbacks.
-    
+
     Returns:
         Configured ChatOpenAI or AzureChatOpenAI instance.
     """
@@ -266,11 +284,11 @@ def get_planning_llm(
     azure_key = os.getenv("AZURE_OPENAI_API_KEY")
     azure_deployment = os.getenv("AZURE_OPENAI_DEPLOYMENT_NAME", "gpt-4o")
     azure_version = os.getenv("AZURE_OPENAI_API_VERSION", "2025-01-01-preview")
-    
+
     if azure_endpoint and azure_key:
         try:
             from langchain_openai import AzureChatOpenAI
-            
+
             logger.info(f"Using Azure OpenAI: {azure_deployment}")
             return AzureChatOpenAI(
                 azure_endpoint=azure_endpoint,
@@ -281,8 +299,9 @@ def get_planning_llm(
                 streaming=streaming,
             )
         except ImportError:
-            logger.warning("AzureChatOpenAI not available, falling back to OpenAI")
-    
+            logger.warning(
+                "AzureChatOpenAI not available, falling back to OpenAI")
+
     # Fall back to standard OpenAI
     api_key = os.getenv("OPENAI_API_KEY")
     if not api_key:
@@ -290,7 +309,7 @@ def get_planning_llm(
             "Neither Azure OpenAI nor OpenAI API key is configured. "
             "Set AZURE_OPENAI_ENDPOINT + AZURE_OPENAI_API_KEY or OPENAI_API_KEY."
         )
-    
+
     logger.info("Using standard OpenAI API")
     return ChatOpenAI(
         model="gpt-4o",
@@ -341,16 +360,19 @@ async def plan_node(
     # Check if this modification came from the visual editor
     visual_context = state.get("visual_context")
     if visual_context:
-        logger.info("plan_node: Visual editor context detected, adding targeted edit instructions")
+        logger.info(
+            "plan_node: Visual editor context detected, adding targeted edit instructions")
         vc = visual_context
-        changes_str = "\n".join([f"  - {k}: {v}" for k, v in vc.get("changes", {}).items()])
+        changes_str = "\n".join(
+            [f"  - {k}: {v}" for k, v in vc.get("changes", {}).items()])
         visual_context_str = (
             f"Element: <{vc.get('element_tag', 'unknown')}> "
             f"class=\"{vc.get('element_classes', '')}\" "
             f"text=\"{vc.get('element_text', '')}\"\n"
             f"Style changes:\n{changes_str if changes_str else '  (none — see NL request)'}"
         )
-        system_prompt += VISUAL_EDIT_INSTRUCTION.format(visual_context_str=visual_context_str)
+        system_prompt += VISUAL_EDIT_INSTRUCTION.format(
+            visual_context_str=visual_context_str)
 
     # --- Load conversation memory ---
     memory = get_memory()
@@ -383,7 +405,8 @@ async def plan_node(
     if not project_context and org_slug and project_slug:
         try:
             project_context = await memory.load_project_context(org_slug, project_slug)
-            logger.info(f"plan_node: Loaded project context with {len(project_context.get('generations', []))} prior generations")
+            logger.info(
+                f"plan_node: Loaded project context with {len(project_context.get('generations', []))} prior generations")
         except Exception as e:
             logger.warning(f"plan_node: Failed to load project context: {e}")
 
@@ -391,9 +414,11 @@ async def plan_node(
     if not conversation_history and thread_id:
         try:
             conversation_history = await memory.load_history(thread_id)
-            logger.info(f"plan_node: Loaded {len(conversation_history)} history messages")
+            logger.info(
+                f"plan_node: Loaded {len(conversation_history)} history messages")
         except Exception as e:
-            logger.warning(f"plan_node: Failed to load conversation history: {e}")
+            logger.warning(
+                f"plan_node: Failed to load conversation history: {e}")
 
     # Summarize conversation if needed
     conversation_summary = ""
@@ -404,7 +429,8 @@ async def plan_node(
             logger.warning(f"plan_node: Failed to summarize context: {e}")
 
     # Build context prompt section from memory
-    context_prompt = memory.build_context_prompt(project_context, conversation_summary)
+    context_prompt = memory.build_context_prompt(
+        project_context, conversation_summary)
 
     # Build the user message with context
     manifest_str = json.dumps(state.get("manifest", {}), indent=2)
@@ -462,7 +488,8 @@ async def plan_node(
                     f"from {len(retrieval_metadata.get('file_paths_matched', []))} files"
                 )
         except Exception as e:
-            logger.warning(f"plan_node: RAG retrieval failed, using static template info: {e}")
+            logger.warning(
+                f"plan_node: RAG retrieval failed, using static template info: {e}")
             rag_context = get_template_context_for_planner()
             retrieval_metadata = {"fallback_used": True, "error": str(e)}
 
@@ -473,7 +500,8 @@ async def plan_node(
         if thread_id and retrieval_metadata.get("chunks_retrieved", 0) > 0:
             try:
                 from agent.reflexion import publish_to_ably
-                channel_prefix = os.getenv("ABLY_CHANNEL_PREFIX", "ai-backend-generation")
+                channel_prefix = os.getenv(
+                    "ABLY_CHANNEL_PREFIX", "ai-backend-generation")
                 await publish_to_ably(
                     f"{channel_prefix}:{thread_id}",
                     {
@@ -484,7 +512,8 @@ async def plan_node(
                     }
                 )
             except Exception as e:
-                logger.debug(f"plan_node: Failed to publish retrieval_context event: {e}")
+                logger.debug(
+                    f"plan_node: Failed to publish retrieval_context event: {e}")
 
     user_content += """
 ## Task
@@ -558,27 +587,27 @@ async def approval_node(
 ) -> Dict[str, Any]:
     """
     The Gatekeeper node - pauses execution for human approval.
-    
+
     This node publishes the generated plan to an Ably channel for UI rendering,
     then calls interrupt() to pause execution. When resumed via Command,
     it processes the human's decision.
-    
+
     Resume payloads:
         - {"action": "APPROVE"} -> Sets approved=True, continues to scaffold
         - {"action": "EDIT", "feedback": "..."} -> Updates user_prompt, loops back
-    
+
     Args:
         state: Current agent state with implementation_plan.
         config: Runnable configuration with thread_id.
-    
+
     Returns:
         State update with approved status and potentially updated user_prompt.
     """
     logger.info("approval_node: Awaiting human approval")
-    
+
     # Extract thread_id from config for Ably channel
     thread_id = config.get("configurable", {}).get("thread_id", "unknown")
-    
+
     # Prepare the plan summary for the interrupt payload
     plan = state.get("implementation_plan", [])
     plan_summary = {
@@ -588,39 +617,42 @@ async def approval_node(
         "iteration": state.get("iteration_count", 0),
         "awaiting_action": ["APPROVE", "EDIT"],
     }
-    
+
     # Note: In a real implementation, you would publish to Ably here
     # For now, the interrupt payload contains the plan for the caller
-    logger.info(f"approval_node: Publishing plan with {len(plan)} tasks to channel")
-    
+    logger.info(
+        f"approval_node: Publishing plan with {len(plan)} tasks to channel")
+
     # Interrupt execution and wait for human input
     # The payload becomes available to the caller and will be returned
     # when they query the graph state
     human_response = interrupt(plan_summary)
-    
+
     # Process the human's response (after resume via Command)
     action = human_response.get("action", "").upper()
-    
+
     if action == "APPROVE":
         logger.info("approval_node: Plan APPROVED by human")
         return {"approved": True}
-    
+
     elif action == "EDIT":
         feedback = human_response.get("feedback", "")
-        logger.info(f"approval_node: Plan EDIT requested with feedback: {feedback[:100]}...")
-        
+        logger.info(
+            f"approval_node: Plan EDIT requested with feedback: {feedback[:100]}...")
+
         # Append feedback to user_prompt for next iteration
         original_prompt = state.get("user_prompt", "")
         updated_prompt = f"{original_prompt}\n\n[REVISION FEEDBACK]: {feedback}"
-        
+
         return {
             "approved": False,
             "user_prompt": updated_prompt,
         }
-    
+
     else:
         # Unknown action, treat as rejection
-        logger.warning(f"approval_node: Unknown action '{action}', treating as rejection")
+        logger.warning(
+            f"approval_node: Unknown action '{action}', treating as rejection")
         return {"approved": False}
 
 
@@ -629,27 +661,10 @@ async def approval_node(
 # =============================================================================
 
 # Import execution nodes from execution_layer module
-from agent.execution_layer import (
-    generation_node,
-    persistence_node,
-    code_review_node,
-    BUILDER_PROMPT,
-    get_mcp_wrapper,
-    list_generated_files,
-)
 
 # Import template nodes
-from agent.template_nodes import template_selection_node, template_upload_node
 
 # Import reflexion nodes from reflexion module
-from agent.reflexion import (
-    trigger_build_node,
-    reflexion_node,
-    escalation_node,
-    should_fix,
-    DEBUGGER_PROMPT,
-    MAX_REFLEXION_ITERATIONS,
-)
 
 
 # =============================================================================
@@ -659,14 +674,14 @@ from agent.reflexion import (
 def check_approval(state: AgentState) -> Literal["template_upload", "planner"]:
     """
     Conditional edge that routes based on approval status.
-    
+
     This implements the Antigravity loop with two-phase generation:
     - If approved: proceed to template upload (Phase 1)
     - If not approved: loop back to planning with updated feedback
-    
+
     Args:
         state: Current agent state with approved flag.
-    
+
     Returns:
         Next node name: "template_upload" or "planner"
     """
@@ -674,7 +689,8 @@ def check_approval(state: AgentState) -> Literal["template_upload", "planner"]:
         logger.info("check_approval: Approved -> template_upload (Phase 1)")
         return "template_upload"
     else:
-        logger.info("check_approval: Not approved -> planner (Antigravity loop)")
+        logger.info(
+            "check_approval: Not approved -> planner (Antigravity loop)")
         return "planner"
 
 
@@ -713,7 +729,7 @@ def create_antigravity_graph(
 ) -> Any:
     """
     Create and compile the Antigravity agent graph.
-    
+
     The graph implements the following flow:
     1. planner (plan_node) - Generate implementation plan
     2. approval (approval_node) - HITL interrupt for approval (skipped if skip_approval=True)
@@ -724,17 +740,17 @@ def create_antigravity_graph(
     7. Conditional: build_status? -> end/reflexion/escalate
     8. reflexion (reflexion_node) - Analyze errors and generate fixes
     9. escalation (escalation_node) - Request human help if max retries
-    
+
     Args:
         checkpointer: Optional checkpointer (e.g., AsyncRedisSaver) for persistence.
             Required for interrupt/resume to work across sessions.
         enable_reflexion: Whether to include the reflexion loop. Defaults to True.
         skip_approval: Whether to skip the HITL approval step. Defaults to False.
             Set to True when running without checkpointer.
-    
+
     Returns:
         Compiled graph ready for execution.
-    
+
     Example:
         >>> from agent.state_engine import create_redis_saver
         >>> checkpointer = create_redis_saver()
@@ -746,21 +762,25 @@ def create_antigravity_graph(
     """
     # Create the graph with AgentState schema
     builder = StateGraph(AgentState)
-    
+
     # Add core nodes
     builder.add_node("template_selection", template_selection_node)
     builder.add_node("planner", plan_node)
     builder.add_node("generator", generation_node)
-    builder.add_node("code_review", code_review_node)       # Phase 5: Quality review
-    builder.add_node("template_upload", template_upload_node)  # Phase 1: Upload template
-    builder.add_node("persistence", persistence_node)  # Phase 2: Upload custom files
+    # Phase 5: Quality review
+    builder.add_node("code_review", code_review_node)
+    # Phase 1: Upload template
+    builder.add_node("template_upload", template_upload_node)
+    # Phase 2: Upload custom files
+    builder.add_node("persistence", persistence_node)
 
     if skip_approval:
         # Simple flow: template_selection -> planner -> generator (no HITL)
         logger.info("Building graph with skip_approval=True (no HITL)")
         builder.set_entry_point("template_selection")
         builder.add_edge("template_selection", "planner")
-        builder.add_edge("planner", "template_upload")  # Upload template before generation
+        # Upload template before generation
+        builder.add_edge("planner", "template_upload")
         builder.add_edge("template_upload", "generator")
     else:
         # Full HITL flow with approval node
@@ -798,10 +818,10 @@ def create_antigravity_graph(
         builder.add_node("trigger_build", trigger_build_node)
         builder.add_node("reflexion", reflexion_node)
         builder.add_node("escalation", escalation_node)
-        
+
         # Chain: persistence -> trigger_build
         builder.add_edge("persistence", "trigger_build")
-        
+
         # Conditional edge from trigger_build based on build status
         builder.add_conditional_edges(
             "trigger_build",
@@ -812,16 +832,16 @@ def create_antigravity_graph(
                 "escalate": "escalation",
             }
         )
-        
+
         # Reflexion loops back to generator
         builder.add_edge("reflexion", "generator")
-        
+
         # Escalation can loop back to planner (after human input)
         builder.add_edge("escalation", "planner")
     else:
         # Simple flow: persistence -> END
         builder.add_edge("persistence", END)
-    
+
     # Compile with checkpointer if provided
     if checkpointer:
         logger.info("Compiling graph with checkpointer for persistence")
@@ -867,7 +887,8 @@ def create_modification_graph(
     builder.add_node("analysis", modification_analysis_node)
     builder.add_node("modification_plan", modification_planning_node)
     builder.add_node("generator", generation_node)
-    builder.add_node("code_review", code_review_node)   # Phase 5: quality check
+    # Phase 5: quality check
+    builder.add_node("code_review", code_review_node)
     builder.add_node("persistence", persistence_node)
 
     # Set entry and build the chain
@@ -926,21 +947,21 @@ async def run_antigravity_agent(
 ) -> Dict[str, Any]:
     """
     Convenience function to run the Antigravity agent.
-    
+
     This sets up the graph with Redis persistence and runs it with the
     provided inputs. The graph will pause at the approval node and
     return the interrupt data.
-    
+
     Args:
         manifest: Backend API manifest.
         user_prompt: User's frontend requirements.
         thread_id: Unique thread identifier for persistence.
         file_system: Optional existing files (triggers delta mode).
         redis_url: Optional Redis URL (defaults to REDIS_URL env var).
-    
+
     Returns:
         Graph execution result or interrupt state.
-    
+
     Example:
         >>> result = await run_antigravity_agent(
         ...     manifest={"endpoints": ["/api/users"]},
@@ -950,15 +971,15 @@ async def run_antigravity_agent(
     """
     # Create checkpointer
     checkpointer = create_redis_saver(redis_url)
-    
+
     # Create graph
     graph = create_antigravity_graph(checkpointer=checkpointer)
-    
+
     # Load template files if no existing file_system provided
     if not file_system:
         logger.info("Loading template files as base")
         file_system = load_template("nextjs-app")
-    
+
     # Prepare initial state
     initial_state: AgentState = {
         "manifest": manifest,
@@ -975,14 +996,14 @@ async def run_antigravity_agent(
         "conversation_history": [],
         "project_context": {},
     }
-    
+
     # Get config
     config = get_graph_config(thread_id)
-    
+
     # Run the graph
     logger.info(f"Starting Antigravity agent for thread: {thread_id}")
     result = await graph.ainvoke(initial_state, config=config)
-    
+
     return result
 
 
@@ -994,19 +1015,19 @@ async def resume_antigravity_agent(
 ) -> Dict[str, Any]:
     """
     Resume the Antigravity agent after human review.
-    
+
     This function resumes a paused graph execution with the human's
     decision (approve or edit with feedback).
-    
+
     Args:
         thread_id: Thread identifier of the paused execution.
         action: Human action - "APPROVE" or "EDIT".
         feedback: Required feedback text if action is "EDIT".
         redis_url: Optional Redis URL (defaults to REDIS_URL env var).
-    
+
     Returns:
         Graph execution result after resume.
-    
+
     Example:
         >>> # Approve the plan
         >>> result = await resume_antigravity_agent(
@@ -1023,25 +1044,26 @@ async def resume_antigravity_agent(
     """
     # Create checkpointer
     checkpointer = create_redis_saver(redis_url)
-    
+
     # Create graph
     graph = create_antigravity_graph(checkpointer=checkpointer)
-    
+
     # Get config
     config = get_graph_config(thread_id)
-    
+
     # Build resume payload
     resume_payload: Dict[str, Any] = {"action": action}
     if action == "EDIT" and feedback:
         resume_payload["feedback"] = feedback
-    
+
     # Resume with Command
-    logger.info(f"Resuming Antigravity agent for thread: {thread_id} with action: {action}")
+    logger.info(
+        f"Resuming Antigravity agent for thread: {thread_id} with action: {action}")
     result = await graph.ainvoke(
         Command(resume=resume_payload),
         config=config,
     )
-    
+
     return result
 
 
@@ -1055,26 +1077,26 @@ async def get_agent_state(
 ) -> Optional[Dict[str, Any]]:
     """
     Get the current state of an Antigravity agent execution.
-    
+
     This is useful for checking if the agent is paused at an interrupt
     and retrieving the plan for UI display.
-    
+
     Args:
         thread_id: Thread identifier to inspect.
         redis_url: Optional Redis URL (defaults to REDIS_URL env var).
-    
+
     Returns:
         Current agent state or None if not found.
     """
     # Create checkpointer
     checkpointer = create_redis_saver(redis_url)
-    
+
     # Create graph
     graph = create_antigravity_graph(checkpointer=checkpointer)
-    
+
     # Get config
     config = get_graph_config(thread_id)
-    
+
     # Get state
     try:
         state = await graph.aget_state(config)

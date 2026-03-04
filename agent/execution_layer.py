@@ -1040,7 +1040,8 @@ async def _invoke_tool_best_effort(tool: BaseTool, payloads: List[Any]) -> Tuple
     last_error: Optional[Exception] = None
 
     # Tools with args_schema don't accept string payloads
-    has_json_schema = hasattr(tool, "args_schema") and tool.args_schema is not None
+    has_json_schema = hasattr(
+        tool, "args_schema") and tool.args_schema is not None
 
     for payload in payloads:
         # Skip string payloads for tools with JSON schema
@@ -1097,7 +1098,8 @@ async def gather_mcp_context(
         mcp = await get_mcp_wrapper()
         all_tools = mcp.get_tools()
         # Filter out action/mutation tools that shouldn't be used for documentation lookups
-        tools = [t for t in all_tools if getattr(t, "name", "") not in _TOOL_BLOCKLIST]
+        tools = [t for t in all_tools if getattr(
+            t, "name", "") not in _TOOL_BLOCKLIST]
     except Exception as e:
         warning = f"MCP initialization failed: {e}"
         logger.warning(warning)
@@ -1748,7 +1750,8 @@ async def generation_node(
             return file_path, None, task_logs, 0
 
         if file_path in PROTECTED_FILES:
-            task_logs.append(f"BLOCKED: Cannot modify protected file {file_path}")
+            task_logs.append(
+                f"BLOCKED: Cannot modify protected file {file_path}")
             return file_path, None, task_logs, 0
 
         if file_path in template_paths and task_type == "create":
@@ -1864,9 +1867,11 @@ Never invent component prop signatures - only use components as defined.
                 return file_path, None, task_logs, 0
 
     # Run all generatable tasks in parallel (semaphore caps concurrency)
-    logger.info(f"generation_node: Generating {total_generatable} files with batch_size={GENERATION_BATCH_SIZE}")
+    logger.info(
+        f"generation_node: Generating {total_generatable} files with batch_size={GENERATION_BATCH_SIZE}")
     task_results = await asyncio.gather(
-        *[_generate_one_task(t, idx) for idx, t in enumerate(generatable_tasks)],
+        *[_generate_one_task(t, idx)
+          for idx, t in enumerate(generatable_tasks)],
         return_exceptions=True,
     )
 
