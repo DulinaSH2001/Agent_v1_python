@@ -22,13 +22,24 @@ logger = logging.getLogger(__name__)
 
 
 PROTECTED_FILES = frozenset({
+    # Root config — never regenerate
     "app/layout.tsx",
     "app/page.tsx",
+    "app/loading.tsx",
+    "app/error.tsx",
     "styles/globals.css",
     "tailwind.config.js",
     "next.config.js",
     "tsconfig.json",
     "package.json",
+    # Pre-built layout components — reuse, never overwrite
+    "components/layout/Sidebar.tsx",
+    "components/layout/Header.tsx",
+    "components/layout/PageContainer.tsx",
+    # Pre-built data components — reuse, never overwrite
+    "components/data/DataTable.tsx",
+    "components/data/StatCard.tsx",
+    "components/data/EmptyState.tsx",
 })
 
 

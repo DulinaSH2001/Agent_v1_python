@@ -75,7 +75,7 @@ Generate TypeScript/TSX code for Next.js 15 applications based on:
 2. Backend API manifest for data types
 3. Existing file content (for modifications)
 
-## STRICT Next.js 15 Compliance Rules
+## Next.js 15 Compliance Guidelines
 
 ### 1. Schema Validation
 Always use Zod for schema validation:
@@ -157,14 +157,38 @@ import { Switch } from '@/components/ui/switch';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Textarea } from '@/components/ui/textarea';
-import { Toast, ToastAction, ToastClose, ToastDescription, ToastProvider, ToastTitle, ToastViewport } from '@/components/ui/toast';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
 ```
 
-NEVER import from `@/components/ui/header`, `@/components/ui/footer`, `@/components/ui/navbar`,
-`@/components/ui/sidebar`, `@/components/ui/accordion`, `@/components/ui/popover`,
+**NEVER** import from `@/components/ui/toast` — it does not exist. For notifications, use sonner:
+```typescript
+import { toast } from 'sonner';
+// Usage: toast.success('Saved!'), toast.error('Failed'), toast('Message')
+```
+
+Do not import from `@/components/ui/header`, `@/components/ui/footer`, `@/components/ui/navbar`,
+`@/components/ui/accordion`, `@/components/ui/popover`,
 `@/components/ui/slider`, `@/components/ui/radio-group`, or any other path not listed above.
-If you need a header, footer, or nav, create them as custom components in `components/`.
+
+### Pre-built Layout & Data Components
+These components are pre-built in the template — ALWAYS import and reuse them instead of creating duplicates:
+```typescript
+// Layout shell — wrap page content in this
+import { PageContainer } from '@/components/layout/PageContainer';
+// Reusable sidebar with nav links
+import { Sidebar } from '@/components/layout/Sidebar';
+// Top header bar with breadcrumb + theme toggle
+import { Header } from '@/components/layout/Header';
+// Generic sortable, paginated data table
+import { DataTable } from '@/components/data/DataTable';
+// KPI metric card (title, value, change%)
+import { StatCard } from '@/components/data/StatCard';
+// Empty state placeholder (icon, title, description, CTA)
+import { EmptyState } from '@/components/data/EmptyState';
+```
+When the task needs a table → use `<DataTable>`. When it needs stats/KPIs → use `<StatCard>`.
+When generating a page with a sidebar layout → use `<Sidebar>` + `<Header>` + `<PageContainer>`.
+Only create NEW custom components for domain-specific logic not covered by the above.
 
 ### 6. TypeScript Strict Mode
 - Prefer `unknown` over `any`; never use `any` for props or return types
@@ -184,7 +208,7 @@ If you need a header, footer, or nav, create them as custom components in `compo
 
 ### 8. Required patterns for special files
 
-**error.tsx** — MUST use exactly this pattern:
+**error.tsx** — use this pattern exactly:
 ```typescript
 'use client';
 
@@ -210,7 +234,7 @@ export default function Error({ error, reset }: ErrorProps) {
 }
 ```
 
-**loading.tsx** — MUST use exactly this pattern (no 'use client'):
+**loading.tsx** — use this pattern (no 'use client'):
 ```typescript
 import { Skeleton } from '@/components/ui/skeleton';
 
@@ -234,19 +258,19 @@ const data = await fetch('/api/data', { next: { revalidate: 60 } }); // ISR
 const data = await fetch('/api/data', { cache: 'no-store' }); // dynamic
 ```
 
-### 10. PROTECTED FILES — DO NOT GENERATE
+### 10. Reserved files — do not generate
 These files already exist in the template and are managed outside this generation:
-- `app/layout.tsx` — NEVER modify or regenerate
-- `app/page.tsx` — NEVER modify or regenerate (or generate custom pages in `app/[route]/page.tsx` instead)
-- `styles/globals.css` — NEVER modify
-- `tailwind.config.js` — NEVER modify
-- `next.config.js` — NEVER modify
-- `tsconfig.json` — NEVER modify
+- `app/layout.tsx` — do not modify or regenerate
+- `app/page.tsx` — do not modify or regenerate (create custom pages in `app/[route]/page.tsx` instead)
+- `styles/globals.css` — do not modify
+- `tailwind.config.js` — do not modify
+- `next.config.js` — do not modify
+- `tsconfig.json` — do not modify
 
 If you need a home page, create `app/dashboard/page.tsx` or other route-specific pages.
 If you need layout changes beyond the root, create nested `app/[route]/layout.tsx` for specific routes.
 
-### 11. Component Usage Rules — CRITICAL
+### 11. Component Usage Guidelines
 Before using ANY custom component:
 1. **Check the "Available Components" section** provided below the task description
 2. **Verify it exists** in the list with exact name
@@ -329,9 +353,9 @@ Connect to real backend API endpoints as defined in the manifest.
 """
 
 DELTA_GENERATION_INSTRUCTION = """
-## CRITICAL: MODIFICATION MODE
+## Modification Mode
 
-You are modifying an existing file. Follow these rules:
+You are modifying an existing file. Please follow these rules:
 
 1. **Preserve Existing Code**: Keep all existing imports, types, and logic that are not being changed
 2. **Merge Carefully**: Add new functionality without breaking existing features
@@ -858,7 +882,6 @@ SHADCN_COMPONENT_HINTS = [
     "table",
     "tabs",
     "textarea",
-    "toast",
     "tooltip",
 ]
 
@@ -1640,64 +1663,110 @@ async def generation_node(
         and not (t.get("file_path") in template_paths and t.get("type", "create") == "create")
     ]
     total_generatable = len(generatable_tasks)
-    generated_index = 0
 
-    # Process each task
-    for i, task in enumerate(plan):
-        task_id = task.get("id", f"task-{i}")
+    # Handle deletes first (sequential, no LLM needed)
+    for task in plan:
+        if task.get("type") == "delete" and task.get("file_path") in file_system:
+            del file_system[task["file_path"]]
+            build_logs.append(f"Deleted: {task['file_path']}")
+
+    # Pre-fetch RAG context for all tasks in parallel (batch instead of N sequential calls)
+    rag_context_map: dict = {}
+    try:
+        from agent.template_rag import retrieve_relevant_chunks, get_template_rag
+        rag_instance = get_template_rag()
+
+        async def _fetch_rag_for_task(t: dict) -> tuple:
+            fp = t.get("file_path", "")
+            desc = t.get("description", "")
+            task_type = t.get("type", "create")
+            try:
+                chunks = retrieve_relevant_chunks(
+                    query=desc,
+                    task_description=f"{task_type} {fp}: {desc}",
+                    top_k=3,
+                )
+                return fp, rag_instance.format_for_prompt(chunks) if chunks else ""
+            except Exception:
+                return fp, ""
+
+        rag_results = await asyncio.gather(
+            *[_fetch_rag_for_task(t) for t in generatable_tasks],
+            return_exceptions=True,
+        )
+        for r in rag_results:
+            if isinstance(r, tuple):
+                fp, ctx = r
+                if ctx:
+                    rag_context_map[fp] = ctx
+    except Exception as e:
+        logger.debug(f"generation_node: Batch RAG prefetch skipped: {e}")
+
+    # MCP context cache — keyed by component hints hash, avoid re-fetching per file
+    _mcp_cache_local: dict = {}
+
+    async def _get_mcp_cached(task: dict, file_path: str, task_index: int) -> dict:
+        import hashlib
+        hints = tuple(sorted(task.get("requires_shadcn", [])))
+        cache_key = hashlib.md5(str(hints).encode()).hexdigest()[:8]
+        if cache_key in _mcp_cache_local:
+            return _mcp_cache_local[cache_key]
+        ctx = await gather_mcp_context(
+            phase="generation",
+            prompt=task.get("description", ""),
+            manifest=manifest,
+            task=task,
+            thread_id=thread_id,
+            file_path=file_path,
+            task_index=task_index,
+            max_references=3,
+        )
+        _mcp_cache_local[cache_key] = ctx
+        return ctx
+
+    # ── Parallel generation with concurrency limit ────────────────────────────
+    # Tasks run with max GENERATION_BATCH_SIZE concurrent LLM calls.
+    # Results are collected and merged into file_system at the end.
+    GENERATION_BATCH_SIZE = 3
+    semaphore = asyncio.Semaphore(GENERATION_BATCH_SIZE)
+
+    data_mode = state.get("data_mode", "real_api")
+
+    async def _generate_one_task(task: dict, task_index: int) -> tuple:
+        """
+        Generate code for a single task.
+        Returns (file_path, code, logs, streamed_count).
+        """
+        task_logs: list = []
+        task_id = task.get("id", f"task-{task_index}")
         task_type = task.get("type", "create")
         file_path = task.get("file_path", "")
         description = task.get("description", "")
 
         if not file_path:
-            logger.warning(
-                f"generation_node: Task {task_id} has no file_path, skipping")
-            build_logs.append(f"Skipped task {task_id}: no file path")
-            continue
+            task_logs.append(f"Skipped task {task_id}: no file path")
+            return file_path, None, task_logs, 0
 
-        # Hard block: skip protected files entirely (safety net)
         if file_path in PROTECTED_FILES:
-            logger.warning(
-                f"generation_node: BLOCKED modification of protected file {file_path}")
-            build_logs.append(
-                f"BLOCKED: Cannot modify protected file {file_path}")
-            continue
+            task_logs.append(f"BLOCKED: Cannot modify protected file {file_path}")
+            return file_path, None, task_logs, 0
 
-        # Skip template files - they were already uploaded in Phase 1
         if file_path in template_paths and task_type == "create":
-            logger.info(
-                f"generation_node: Skipping template file {file_path} (already uploaded)")
-            build_logs.append(f"Skipped: {file_path} (from template)")
-            continue
+            task_logs.append(f"Skipped: {file_path} (from template)")
+            return file_path, None, task_logs, 0
 
-        if task_type == "delete":
-            # Handle file deletion
-            if file_path in file_system:
-                del file_system[file_path]
-                build_logs.append(f"Deleted: {file_path}")
-                logger.info(f"generation_node: Deleted {file_path}")
-            continue
-
-        logger.info(
-            f"generation_node: Processing {task_id} - {task_type} {file_path}")
-
-        # Build the prompt
-        system_prompt = BUILDER_PROMPT
-
-        # Append data mode instruction
-        data_mode = state.get("data_mode", "real_api")
+        # Build system prompt
+        sys_prompt = BUILDER_PROMPT
         if data_mode == "sample_data":
-            system_prompt += SAMPLE_DATA_INSTRUCTION
+            sys_prompt += SAMPLE_DATA_INSTRUCTION
         elif manifest:
-            system_prompt += REAL_API_INSTRUCTION
+            sys_prompt += REAL_API_INSTRUCTION
 
-        # Check if this is a modification (Antigravity delta mode)
         existing_content = ""
         if task_type == "modify" and file_path in file_system:
             existing_content = file_system[file_path]
-            system_prompt += DELTA_GENERATION_INSTRUCTION
+            sys_prompt += DELTA_GENERATION_INSTRUCTION
 
-        # Build user message
         user_content = f"""## Task
 {description}
 
@@ -1709,29 +1778,13 @@ async def generation_node(
 {manifest_str}
 ```
 """
-
-        # Add component inventory if available
         if component_signatures:
-            user_content += f"""
-{component_signatures}
-"""
+            user_content += f"\n{component_signatures}\n"
 
-        # --- Per-task RAG retrieval for relevant template context ---
-        try:
-            from agent.template_rag import retrieve_relevant_chunks
-            task_rag_results = retrieve_relevant_chunks(
-                query=description,
-                task_description=f"{task_type} {file_path}: {description}",
-                top_k=3,
-            )
-            if task_rag_results:
-                from agent.template_rag import get_template_rag
-                rag = get_template_rag()
-                task_rag_context = rag.format_for_prompt(task_rag_results)
-                if task_rag_context:
-                    user_content += f"\n{task_rag_context}\n"
-        except Exception as e:
-            logger.debug(f"generation_node: Task-level RAG skipped: {e}")
+        # Use pre-fetched RAG context (no extra Pinecone call per task)
+        rag_ctx = rag_context_map.get(file_path, "")
+        if rag_ctx:
+            user_content += f"\n{rag_ctx}\n"
 
         if existing_content:
             user_content += f"""
@@ -1740,7 +1793,6 @@ async def generation_node(
 {existing_content}
 ```
 """
-
         user_content += """
 ## Instructions
 Generate the complete file content. Return ONLY the code, no markdown formatting.
@@ -1748,83 +1800,85 @@ When using components, always verify the required props from the "Available Comp
 Never invent component prop signatures - only use components as defined.
 """
 
-        try:
-            messages = [
-                SystemMessage(content=system_prompt),
-                HumanMessage(content=user_content),
-            ]
+        async with semaphore:
+            try:
+                messages = [
+                    SystemMessage(content=sys_prompt),
+                    HumanMessage(content=user_content),
+                ]
 
-            mcp_context = await gather_mcp_context(
-                phase="generation",
-                prompt=description,
-                manifest=manifest,
-                task=task,
-                thread_id=thread_id,
-                file_path=file_path,
-                task_index=generated_index,
-                max_references=3,
-            )
-            if mcp_context["references"]:
-                messages.append(
-                    HumanMessage(content="## MCP References\n" +
-                                 "\n\n".join(mcp_context["references"]))
-                )
-            if mcp_context["warnings"]:
-                build_logs.extend(
-                    [f"MCP warning ({file_path}): {w}" for w in mcp_context["warnings"][:2]])
-            if mcp_context["tools_used"]:
-                task["mcp_tools_used"] = sorted(
-                    set(task.get("mcp_tools_used", []) + mcp_context["tools_used"]))
+                mcp_context = await _get_mcp_cached(task, file_path, task_index)
+                if mcp_context["references"]:
+                    messages.append(
+                        HumanMessage(content="## MCP References\n" +
+                                     "\n\n".join(mcp_context["references"]))
+                    )
+                if mcp_context["warnings"]:
+                    task_logs.extend(
+                        [f"MCP warning ({file_path}): {w}" for w in mcp_context["warnings"][:2]])
+                if mcp_context["tools_used"]:
+                    task["mcp_tools_used"] = sorted(
+                        set(task.get("mcp_tools_used", []) + mcp_context["tools_used"]))
 
-            # Generate the code
-            response = await llm.ainvoke(messages, config=config)
+                response = await llm.ainvoke(messages, config=config)
+                code = response.content.strip()
 
-            # Extract code from response
-            code = response.content.strip()
+                # Strip markdown fences if present
+                if code.startswith("```"):
+                    lines = code.split("\n")[1:]
+                    if lines and lines[-1].strip() == "```":
+                        lines = lines[:-1]
+                    code = "\n".join(lines)
 
-            # Clean up potential markdown formatting
-            if code.startswith("```"):
-                lines = code.split("\n")
-                # Remove first line (```typescript or similar)
-                lines = lines[1:]
-                # Remove last line if it's just ```
-                if lines and lines[-1].strip() == "```":
-                    lines = lines[:-1]
-                code = "\n".join(lines)
+                task_logs.append(f"Generated: {file_path} ({len(code)} bytes)")
+                logger.info(f"generation_node: Generated {file_path}")
 
-            # Store in file system
-            file_system[file_path] = code
-            build_logs.append(f"Generated: {file_path} ({len(code)} bytes)")
-            logger.info(f"generation_node: Generated {file_path}")
+                # Publish + upload immediately after generation
+                streamed = 0
+                if thread_id:
+                    await publish_file_generated(
+                        thread_id=thread_id,
+                        file_path=file_path,
+                        content=code,
+                        task_index=task_index,
+                        total_tasks=total_generatable,
+                    )
+                if org_slug and project_slug and thread_id:
+                    uploaded = await stream_file_to_backend(
+                        file_path=file_path,
+                        content=code,
+                        org_slug=org_slug,
+                        project_slug=project_slug,
+                        job_id=thread_id,
+                    )
+                    if uploaded:
+                        streamed = 1
+                        task_logs.append(f"Streamed: {file_path}")
 
-            # --- Streaming: publish + upload each file immediately ---
-            if thread_id:
-                await publish_file_generated(
-                    thread_id=thread_id,
-                    file_path=file_path,
-                    content=code,
-                    task_index=generated_index,
-                    total_tasks=total_generatable,
-                )
+                return file_path, code, task_logs, streamed
 
-            if org_slug and project_slug and thread_id:
-                uploaded = await stream_file_to_backend(
-                    file_path=file_path,
-                    content=code,
-                    org_slug=org_slug,
-                    project_slug=project_slug,
-                    job_id=thread_id,
-                )
-                if uploaded:
-                    files_streamed += 1
-                    build_logs.append(f"Streamed: {file_path}")
+            except Exception as e:
+                error_msg = f"Failed to generate {file_path}: {str(e)}"
+                logger.error(f"generation_node: {error_msg}")
+                task_logs.append(f"Error: {error_msg}")
+                return file_path, None, task_logs, 0
 
-            generated_index += 1
+    # Run all generatable tasks in parallel (semaphore caps concurrency)
+    logger.info(f"generation_node: Generating {total_generatable} files with batch_size={GENERATION_BATCH_SIZE}")
+    task_results = await asyncio.gather(
+        *[_generate_one_task(t, idx) for idx, t in enumerate(generatable_tasks)],
+        return_exceptions=True,
+    )
 
-        except Exception as e:
-            error_msg = f"Failed to generate {file_path}: {str(e)}"
-            logger.error(f"generation_node: {error_msg}")
-            build_logs.append(f"Error: {error_msg}")
+    for result in task_results:
+        if isinstance(result, Exception):
+            build_logs.append(f"Error: {result}")
+            continue
+        fp, code, task_logs, streamed = result
+        build_logs.extend(task_logs)
+        files_streamed += streamed
+        if code is not None:
+            file_system[fp] = code
 
     logger.info(
         f"generation_node: Completed. Generated {len(file_system)} files, streamed {files_streamed}.")

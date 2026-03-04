@@ -1,17 +1,18 @@
 /**
  * Common Type Definitions
- * 
  * Extend these types for your application.
  */
 
-// Base entity with common fields
+// ─── Base ─────────────────────────────────────────────────────────────────────
+
 export interface BaseEntity {
     id: string;
     createdAt: Date;
     updatedAt: Date;
 }
 
-// User type
+// ─── Users ────────────────────────────────────────────────────────────────────
+
 export interface User extends BaseEntity {
     email: string;
     name: string;
@@ -19,7 +20,8 @@ export interface User extends BaseEntity {
     role: "admin" | "user" | "guest";
 }
 
-// API Response wrapper
+// ─── API ──────────────────────────────────────────────────────────────────────
+
 export interface ApiResponse<T> {
     data: T;
     success: boolean;
@@ -27,7 +29,6 @@ export interface ApiResponse<T> {
     errors?: Record<string, string[]>;
 }
 
-// Pagination
 export interface PaginatedResponse<T> {
     data: T[];
     total: number;
@@ -36,26 +37,65 @@ export interface PaginatedResponse<T> {
     totalPages: number;
 }
 
-// Common form state
+// ─── Forms ────────────────────────────────────────────────────────────────────
+
 export interface FormState {
     success: boolean;
     errors?: Record<string, string[]>;
     message?: string;
 }
 
-// Navigation item
-export interface NavItem {
-    title: string;
+// ─── Navigation ───────────────────────────────────────────────────────────────
+
+/** Navigation link — used by Sidebar and Header components */
+export interface NavLink {
     href: string;
+    label: string;
+    /** lucide icon name — see iconMap in Sidebar.tsx */
     icon?: string;
+    /** Badge count or label shown next to nav item */
+    badge?: string | number;
     disabled?: boolean;
-    external?: boolean;
 }
 
-// Table column definition
-export interface ColumnDef<T> {
-    id: string;
+// ─── Tables ───────────────────────────────────────────────────────────────────
+
+export type SortDirection = "asc" | "desc";
+
+export interface SortConfig<T> {
+    key: keyof T;
+    direction: SortDirection;
+}
+
+export interface PaginationState {
+    page: number;
+    pageSize: number;
+}
+
+export interface PaginatedResult<T> {
+    items: T[];
+    total: number;
+    page: number;
+    pageSize: number;
+    totalPages: number;
+}
+
+/** Column definition for DataTable<T> */
+export interface TableColumn<T> {
+    /** Property key of the data row */
+    key: keyof T | string;
+    /** Column header label */
     header: string;
-    accessorKey: keyof T;
-    cell?: (value: T[keyof T], row: T) => React.ReactNode;
+    /** Custom cell renderer — receives (value, row) */
+    render?: (value: T[keyof T], row: T) => React.ReactNode;
+    /** Set to false to disable sorting for this column (default: true) */
+    sortable?: boolean;
+}
+
+// ─── Select / Dropdowns ───────────────────────────────────────────────────────
+
+export interface SelectOption<T = string> {
+    label: string;
+    value: T;
+    disabled?: boolean;
 }

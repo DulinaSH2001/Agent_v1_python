@@ -65,10 +65,10 @@ Generate detailed, actionable implementation plans for Next.js projects based on
 1. A backend API manifest (endpoints, schemas, authentication)
 2. User requirements for styling and functionality
 
-## STRICT Next.js 15 Rules
-You MUST follow these rules without exception:
+## Next.js 15 Guidelines
+Please follow these guidelines carefully:
 
-1. **App Router Only**: Use the `app/` directory structure. Never use `pages/`.
+1. **App Router Only**: Use the `app/` directory structure. Avoid using `pages/`.
    - Route: `app/dashboard/page.tsx`
    - Layout: `app/dashboard/layout.tsx`
    - Loading: `app/dashboard/loading.tsx`
@@ -84,35 +84,48 @@ You MUST follow these rules without exception:
      export async function createUser(formData: FormData) { ... }
      ```
 
-3. **Shadcn UI Components**: ONLY these components exist in `@/components/ui/`:
-   - `button`, `card`, `input`, `label`, `badge`, `dialog`, `skeleton`, `table`
-   - Do NOT plan to use: sheet, tabs, avatar, dropdown-menu, select, toast, navbar, header, footer, sidebar
-   - For header/footer/nav: plan as custom components in `components/` not `components/ui/`
+3. **Shadcn UI Components**: Only these components exist in `@/components/ui/`:
+   - Alert, AlertDialog, Avatar, Badge, Button, Card, Checkbox, Dialog, DropdownMenu
+   - Input, Label, Progress, ScrollArea, Select, Separator, Sheet, Skeleton, Switch
+   - Table, Tabs, Textarea, Tooltip
+   - Do NOT use: toast (removed), navbar, header, footer, sidebar, accordion, popover, radio-group
    - Toast notifications: use `sonner` directly — `import { toast } from 'sonner'`
 
-4. **TypeScript Strict Mode**: All files must use TypeScript with strict types.
+4. **Pre-built Layout & Data Components** (already in template — REUSE, do NOT recreate):
+   - `components/layout/Sidebar.tsx` — sidebar with nav links + active state
+   - `components/layout/Header.tsx` — top header with breadcrumb + theme toggle
+   - `components/layout/PageContainer.tsx` — centered layout wrapper
+   - `components/data/DataTable.tsx` — generic sortable + paginated table (`DataTable<T>`)
+   - `components/data/StatCard.tsx` — KPI metric card (title, value, change, icon)
+   - `components/data/EmptyState.tsx` — empty placeholder with icon + CTA
+   - Plan tasks to IMPORT these instead of generating new sidebar/header/table logic.
 
-5. **File Naming Conventions**:
+5. **TypeScript**: All files should use TypeScript with strict types.
+
+6. **File Naming Conventions**:
    - Components: `components/ui/*.tsx` (Shadcn only), `components/*.tsx` (custom)
+   - Layout: `components/layout/*.tsx`, Data: `components/data/*.tsx`
    - Actions: `lib/actions.ts` or `lib/actions/*.ts`
    - Types: `types/*.ts` or co-located `*.types.ts`
    - Utilities: `lib/utils.ts`
 
-6. **Special file requirements**:
-   - `error.tsx` files MUST have `'use client'` at the top and accept `{ error, reset }` props
-   - `loading.tsx` files must NOT have `'use client'`
-   - Do NOT use `'use cache'` directive anywhere — use fetch cache options instead
+7. **Special file requirements**:
+   - `error.tsx` files should have `'use client'` at the top and accept `{ error, reset }` props
+   - `loading.tsx` files should not have `'use client'`
+   - Always add `loading.tsx` for routes with async data fetching
+   - Always add `error.tsx` for routes that could throw
+   - Do not use `'use cache'` directive — use fetch cache options instead
 
-7. **PROTECTED FILES — NEVER PLAN TO MODIFY**:
-   - `app/layout.tsx` — PROTECTED (root layout exists)
-   - `app/page.tsx` — PROTECTED (create custom pages in `app/[route]/page.tsx` instead)
-   - `styles/globals.css` — PROTECTED
-   - `tailwind.config.js` — PROTECTED
-   - `next.config.js` — PROTECTED
-   - `tsconfig.json` — PROTECTED
+8. **Reserved files — keep unchanged**:
+   - `app/layout.tsx` (root layout exists — create route-specific layouts instead)
+   - `app/page.tsx` (create custom pages in `app/[route]/page.tsx`)
+   - `styles/globals.css`
+   - `tailwind.config.js`
+   - `next.config.js`
+   - `tsconfig.json`
 
-   If you need custom pages, plan pages in subdirectories like `app/dashboard/page.tsx`.
-   If you need custom layouts for routes, create `app/[route]/layout.tsx` for specific route groups.
+   For custom pages, use subdirectories like `app/dashboard/page.tsx`.
+   For custom layouts, create `app/[route]/layout.tsx` for specific route groups.
 
 ## Output Format
 Return a JSON array of implementation tasks:
@@ -138,13 +151,13 @@ Return a JSON array of implementation tasks:
 """
 
 DELTA_PLANNING_INSTRUCTION = """
-## CRITICAL: UPDATE MODE ACTIVE
+## Update Mode
 
-This is an UPDATE request, not a fresh build. You must:
+This is an UPDATE request, not a fresh build. Please:
 
 1. **Analyze Existing Files**: Review the file_system to understand current implementation
 2. **Generate DELTA Plan Only**: Specify only files that need modification or addition
-3. **Preserve Existing Work**: Do NOT destroy or recreate existing files unless explicitly requested
+3. **Preserve Existing Work**: Avoid destroying or recreating existing files unless explicitly requested
 4. **Reference Existing Paths**: When modifying, use exact existing file paths
 5. **Merge Logic**: For modifications, describe what to ADD or CHANGE, not full replacements
 
