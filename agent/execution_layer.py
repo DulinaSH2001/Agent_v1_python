@@ -927,6 +927,22 @@ def infer_shadcn_components_from_text(text: str) -> List[str]:
     return sorted(set(found))
 
 
+# Tools that are action/mutation tools and should NOT be used for documentation retrieval
+_TOOL_BLOCKLIST = frozenset({
+    "browser_eval",
+    "create_or_update_file",
+    "nextjs_index",
+    "enable_cache_components",
+    "puppeteer_navigate",
+    "puppeteer_screenshot",
+    "puppeteer_click",
+    "puppeteer_fill",
+    "puppeteer_select",
+    "puppeteer_hover",
+    "puppeteer_evaluate",
+})
+
+
 def _classify_tool(tool: BaseTool) -> List[str]:
     meta = f"{getattr(tool, 'name', '')} {getattr(tool, 'description', '')}".lower()
     categories: List[str] = []
@@ -1056,7 +1072,9 @@ async def gather_mcp_context(
 
     try:
         mcp = await get_mcp_wrapper()
-        tools = mcp.get_tools()
+        all_tools = mcp.get_tools()
+        # Filter out action/mutation tools that shouldn't be used for documentation lookups
+        tools = [t for t in all_tools if getattr(t, "name", "") not in _TOOL_BLOCKLIST]
     except Exception as e:
         warning = f"MCP initialization failed: {e}"
         logger.warning(warning)
@@ -2010,13 +2028,17 @@ async def code_review_node(
             "file_system": file_system,  # possibly mutated with auto-fixes
             "build_logs": build_logs,
             "quality_summary": quality_summary,
+            "iteration_count": state.get("iteration_count", 0) + 1,
         }
 
     except Exception as e:
         logger.error(
             f"code_review_node: Quality review failed: {e}", exc_info=True)
         build_logs.append(f"Code quality review error: {e}")
-        return {"build_logs": build_logs}
+        return {
+            "build_logs": build_logs,
+            "iteration_count": state.get("iteration_count", 0) + 1,
+        }
 
 
 # =============================================================================
