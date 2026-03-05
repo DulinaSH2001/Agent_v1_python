@@ -296,23 +296,25 @@ class TemplateRAG:
         if not results:
             return ""
 
-        sections = ["## Retrieved Template Context\n"]
+        sections = ["## Reference Template Code\n"]
         sections.append(
-            "The following template snippets are most relevant to your task. "
-            "USAGE EXAMPLE sections show the exact import and usage pattern — follow them precisely.\n"
+            "The snippets below are existing source code from the project template, "
+            "provided as reference material for context.\n"
         )
 
         for chunk, score in results[:6]:
             if chunk.chunk_type == "usage_example":
-                component_name = chunk.metadata.get("component_name", chunk.file_path)
-                header = f"### USAGE EXAMPLE: {component_name} (score={score:.2f})"
+                component_name = chunk.metadata.get(
+                    "component_name", chunk.file_path)
+                header = f"### Reference — {component_name} (relevance={score:.2f})"
                 lang = "tsx"
             else:
-                header = f"### Template: {chunk.file_path}"
+                header = f"### Reference — {chunk.file_path}"
                 if chunk.metadata.get("declaration"):
-                    header += f" — {chunk.metadata['declaration']}"
-                header += f" (score={score:.2f}, type={chunk.chunk_type})"
-                lang = "tsx" if chunk.file_path.endswith((".tsx", ".ts")) else "text"
+                    header += f" ({chunk.metadata['declaration']})"
+                header += f" [relevance={score:.2f}, type={chunk.chunk_type}]"
+                lang = "tsx" if chunk.file_path.endswith(
+                    (".tsx", ".ts")) else "text"
             sections.append(header)
             sections.append(f"```{lang}\n{chunk.content}\n```\n")
 

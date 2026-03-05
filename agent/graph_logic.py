@@ -84,6 +84,11 @@ Return a JSON array with tasks like:
 
 Use app/ directory. Use TypeScript. Import existing components (Sidebar, Header, DataTable, etc).
 Use Shadcn components, sonner for toasts, Server Actions in lib/actions.ts.
+
+PROTECTED FILES — never include these in your plan, they already exist and must not be modified:
+- app/page.tsx
+- app/layout.tsx
+- app/globals.css
 """
 
 DELTA_PLANNING_INSTRUCTION = """
@@ -445,35 +450,29 @@ Generate the implementation plan as a JSON array. Return ONLY the JSON array, no
         HumanMessage(content=user_content),
     ]
 
-    # Invoke the LLM
-    try:
-        response = await llm.ainvoke(messages, config=config)
-
-        # Parse the JSON response
-        content = response.content.strip()
-
-        # Handle potential markdown code blocks
+    async def _invoke_and_parse(msgs: list) -> list:
+        """Invoke LLM and parse JSON response. Returns the implementation_plan list."""
+        resp = await llm.ainvoke(msgs, config=config)
+        content = resp.content.strip()
         if content.startswith("```"):
             content = content.split("```")[1]
             if content.startswith("json"):
                 content = content[4:]
             content = content.strip()
+        return json.loads(content)
 
-        implementation_plan = json.loads(content)
-        implementation_plan = enrich_plan_with_mcp_metadata(
-            implementation_plan,
-            mcp_context.get("tools_used", []),
-        )
+    def _build_minimal_user_content() -> str:
+        """Fallback: build a minimal user message without RAG context or manifest."""
+        minimal = f"""## User Requirements\n{state.get("user_prompt", "No specific requirements provided.")}
 
-        logger.info(f"plan_node: Generated {len(implementation_plan)} tasks")
+## Task
+Generate the implementation plan as a JSON array. Return ONLY the JSON array, no markdown formatting.
+"""
+        return minimal
 
-        return {
-            "implementation_plan": implementation_plan,
-            "iteration_count": state.get("iteration_count", 0) + 1,
-            "conversation_history": conversation_history,
-            "project_context": project_context,
-            "retrieval_metadata": retrieval_metadata,
-        }
+    # Invoke the LLM
+    try:
+        implementation_plan = await _invoke_and_parse(messages)
 
     except json.JSONDecodeError as e:
         logger.error(f"plan_node: Failed to parse LLM response as JSON: {e}")
@@ -491,9 +490,51 @@ Generate the implementation plan as a JSON array. Return ONLY the JSON array, no
             "project_context": project_context,
             "retrieval_metadata": retrieval_metadata,
         }
+
     except Exception as e:
-        logger.error(f"plan_node: Unexpected error: {e}")
-        raise
+        # Check if this is an Azure OpenAI content filter (jailbreak false-positive)
+        err_str = str(e)
+        is_content_filter = (
+            "content_filter" in err_str
+            or "content management policy" in err_str
+            or "ResponsibleAIPolicyViolation" in err_str
+        )
+        if not is_content_filter:
+            logger.error(f"plan_node: Unexpected error: {e}")
+            raise
+
+        # --- Content filter retry: strip RAG context and manifest, use minimal prompt ---
+        logger.warning(
+            "plan_node: Content filter triggered (jailbreak false-positive). "
+            "Retrying with minimal prompt (no RAG context)."
+        )
+        minimal_messages = [
+            SystemMessage(content=ARCHITECT_PROMPT),
+            HumanMessage(content=_build_minimal_user_content()),
+        ]
+        try:
+            implementation_plan = await _invoke_and_parse(minimal_messages)
+            logger.info("plan_node: Retry with minimal prompt succeeded.")
+            retrieval_metadata = {**retrieval_metadata,
+                                  "content_filter_retry": True}
+        except Exception as retry_err:
+            logger.error(f"plan_node: Retry also failed: {retry_err}")
+            raise retry_err
+
+    implementation_plan = enrich_plan_with_mcp_metadata(
+        implementation_plan,
+        mcp_context.get("tools_used", []),
+    )
+
+    logger.info(f"plan_node: Generated {len(implementation_plan)} tasks")
+
+    return {
+        "implementation_plan": implementation_plan,
+        "iteration_count": state.get("iteration_count", 0) + 1,
+        "conversation_history": conversation_history,
+        "project_context": project_context,
+        "retrieval_metadata": retrieval_metadata,
+    }
 
 
 # =============================================================================

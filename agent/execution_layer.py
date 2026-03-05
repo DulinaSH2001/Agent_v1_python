@@ -78,24 +78,12 @@ Return ONLY code. No markdown, no explanations.
 
 SAMPLE_DATA_INSTRUCTION = """
 ## DATA MODE: Sample Data
-Instead of fetching from API endpoints, generate realistic INLINE mock data for all components.
+Instead of fetching from API endpoints, generate realistic inline mock data for all components.
 - Use static arrays/objects with realistic sample values (names, emails, dates, prices, etc.)
-- Do NOT make any fetch() calls or API requests
-- Show the full UI populated with sample content so the user can see the complete design
-- Place mock data in a `lib/mock-data.ts` file for easy replacement later
-- Use TypeScript types that match the manifest schemas so switching to real API is straightforward
-
-Example:
-```typescript
-// lib/mock-data.ts
-import { User } from '@/types/user';
-
-export const mockUsers: User[] = [
-  { id: '1', name: 'Alice Johnson', email: 'alice@example.com', role: 'admin' },
-  { id: '2', name: 'Bob Smith', email: 'bob@example.com', role: 'user' },
-  { id: '3', name: 'Carol Williams', email: 'carol@example.com', role: 'editor' },
-];
-```
+- No fetch() calls or API requests.
+- Populate the full UI with sample content so the user can see the complete design.
+- Place mock data in lib/mock-data.ts for easy replacement later.
+- Use TypeScript types that match the manifest schemas so switching to real API is straightforward.
 """
 
 REAL_API_INSTRUCTION = """
@@ -1475,7 +1463,8 @@ async def generation_node(
     try:
         from agent.plan_validator import validate_plan as _validate_plan
         _template_files = state.get("template_files", {})
-        plan, plan_warnings = _validate_plan(plan, file_system, _template_files)
+        plan, plan_warnings = _validate_plan(
+            plan, file_system, _template_files)
         for w in plan_warnings:
             build_logs.append(f"Plan validator: {w}")
     except Exception as _pve:
@@ -1662,10 +1651,9 @@ async def generation_node(
         #     user_content += f"\n{corrections}\n"
 
         user_content += """
-## Instructions
-Generate the complete file content. Return ONLY the code, no markdown formatting.
-When using components, always verify the required props from the "Available Components" section above.
-Never invent component prop signatures - only use components as defined.
+## Output
+Respond with the complete file content only. No explanations, no markdown fences.
+Props for imported components should match the signatures described in the Available Components section.
 """
 
         async with semaphore:
@@ -1704,11 +1692,14 @@ Never invent component prop signatures - only use components as defined.
                     reviewer = CodeQualityReviewer()
                     review = reviewer.review_file(file_path, code, file_system)
                     if review.fixed_content and review.fixed_content != code:
-                        fixed_count = sum(1 for i in review.issues if i.fix_applied)
+                        fixed_count = sum(
+                            1 for i in review.issues if i.fix_applied)
                         code = review.fixed_content
-                        task_logs.append(f"Auto-fixed {fixed_count} issue(s) in {file_path}")
+                        task_logs.append(
+                            f"Auto-fixed {fixed_count} issue(s) in {file_path}")
                     # If errors remain (max 3), do a single targeted LLM correction call
-                    remaining_errors = [i for i in review.issues if i.severity == "error" and not i.fix_applied]
+                    remaining_errors = [
+                        i for i in review.issues if i.severity == "error" and not i.fix_applied]
                     if 0 < len(remaining_errors) <= 3:
                         error_lines = "\n".join(
                             f"- {i.rule} (line {i.line}): {i.message}" for i in remaining_errors
@@ -1724,9 +1715,11 @@ Never invent component prop signatures - only use components as defined.
                                 corr_lines = corr_lines[:-1]
                             corrected = "\n".join(corr_lines)
                         code = corrected
-                        task_logs.append(f"LLM-corrected {len(remaining_errors)} error(s) in {file_path}")
+                        task_logs.append(
+                            f"LLM-corrected {len(remaining_errors)} error(s) in {file_path}")
                 except Exception as _qe:
-                    logger.debug(f"generation_node: Inline quality check skipped for {file_path}: {_qe}")
+                    logger.debug(
+                        f"generation_node: Inline quality check skipped for {file_path}: {_qe}")
 
                 task_logs.append(f"Generated: {file_path} ({len(code)} bytes)")
                 logger.info(f"generation_node: Generated {file_path}")
@@ -1756,10 +1749,79 @@ Never invent component prop signatures - only use components as defined.
                 return file_path, code, task_logs, streamed
 
             except Exception as e:
-                error_msg = f"Failed to generate {file_path}: {str(e)}"
-                logger.error(f"generation_node: {error_msg}")
-                task_logs.append(f"Error: {error_msg}")
-                return file_path, None, task_logs, 0
+                err_str = str(e)
+                is_content_filter = (
+                    "content_filter" in err_str
+                    or "ResponsibleAIPolicyViolation" in err_str
+                    or ("jailbreak" in err_str.lower() and "400" in err_str)
+                )
+
+                if not is_content_filter:
+                    error_msg = f"Failed to generate {file_path}: {err_str}"
+                    logger.error(f"generation_node: {error_msg}")
+                    task_logs.append(f"Error: {error_msg}")
+                    return file_path, None, task_logs, 0
+
+                # Content filter / jailbreak false-positive — retry with minimal prompt
+                logger.warning(
+                    f"generation_node: Content filter triggered for {file_path}. "
+                    "Retrying with minimal prompt."
+                )
+                minimal_sys = (
+                    "You are a senior Next.js developer using TypeScript and Tailwind CSS. "
+                    "Write clean, production-ready code."
+                )
+                minimal_user = (
+                    f"Create the file: {file_path}\n\n"
+                    f"Project context: {state.get('user_prompt', '')}\n\n"
+                    f"Purpose: {description}\n\n"
+                    "Respond with only the file content."
+                )
+                try:
+                    retry_messages = [
+                        SystemMessage(content=minimal_sys),
+                        HumanMessage(content=minimal_user),
+                    ]
+                    retry_response = await llm.ainvoke(retry_messages, config=config)
+                    code = retry_response.content.strip()
+                    if code.startswith("```"):
+                        lines = code.split("\n")[1:]
+                        if lines and lines[-1].strip() == "```":
+                            lines = lines[:-1]
+                        code = "\n".join(lines)
+                    task_logs.append(
+                        f"Generated (retry): {file_path} ({len(code)} bytes)")
+                    logger.info(
+                        f"generation_node: Retry succeeded for {file_path}")
+
+                    streamed = 0
+                    if thread_id:
+                        await publish_file_generated(
+                            thread_id=thread_id,
+                            file_path=file_path,
+                            content=code,
+                            task_index=task_index,
+                            total_tasks=total_generatable,
+                        )
+                    if org_slug and project_slug and thread_id:
+                        uploaded = await stream_file_to_backend(
+                            file_path=file_path,
+                            content=code,
+                            org_slug=org_slug,
+                            project_slug=project_slug,
+                            job_id=thread_id,
+                        )
+                        if uploaded:
+                            streamed = 1
+                            task_logs.append(f"Streamed: {file_path}")
+
+                    return file_path, code, task_logs, streamed
+
+                except Exception as retry_err:
+                    error_msg = f"Failed to generate {file_path} (retry): {str(retry_err)}"
+                    logger.error(f"generation_node: {error_msg}")
+                    task_logs.append(f"Error: {error_msg}")
+                    return file_path, None, task_logs, 0
 
     # Run all generatable tasks in parallel (semaphore caps concurrency)
     logger.info(
