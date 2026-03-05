@@ -15,7 +15,12 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
+from pathlib import Path
 from typing import Any, Dict, List, Literal, Optional
+
+# In-memory counter for recurring error patterns (persists across reflexion iterations per session)
+_error_pattern_counter: Dict[str, int] = {}
 
 from dotenv import load_dotenv
 from langchain_core.messages import HumanMessage, SystemMessage
@@ -816,6 +821,12 @@ async def reflexion_node(
         max_tasks = 3 if current_iteration <= 1 else 5
         fix_tasks = fix_tasks[:max_tasks]
 
+        # Track recurring error patterns → save to corrections.json when seen 2+ times
+        try:
+            _try_save_fix_patterns(fix_tasks)
+        except Exception:
+            pass
+
         logger.info(
             f"reflexion_node: Generated {len(fix_tasks)} fix tasks "
             f"(strategy: {get_progressive_strategy(current_iteration)[:30].strip()})"
@@ -953,6 +964,62 @@ async def escalation_node(
 # =============================================================================
 # Utility Functions
 # =============================================================================
+
+def _try_save_fix_patterns(fix_tasks: List[dict]) -> None:
+    """
+    Track fix patterns from reflexion tasks. When a pattern appears 2+ times
+    in the same session, save it to template_corrections.json for future prompts.
+    """
+    global _error_pattern_counter
+
+    corrections_path = Path(__file__).parent / "template_corrections.json"
+
+    for task in fix_tasks:
+        error_pattern = task.get("error_pattern", "").strip()
+        fix_description = task.get("description", "").strip()
+        if not error_pattern or len(error_pattern) < 10:
+            continue
+
+        # Normalize for deduplication
+        key = error_pattern[:80].lower()
+        _error_pattern_counter[key] = _error_pattern_counter.get(key, 0) + 1
+
+        # Save if seen 2+ times
+        if _error_pattern_counter[key] == 2:
+            try:
+                # Load existing corrections
+                data = {"version": 1, "corrections": []}
+                if corrections_path.exists():
+                    data = json.loads(corrections_path.read_text())
+
+                # Check if this pattern is already stored
+                existing_patterns = [
+                    c.get("pitfall", "").lower()
+                    for c in data.get("corrections", [])
+                ]
+                if key in " ".join(existing_patterns):
+                    continue
+
+                # Extract keywords from error_pattern
+                words = re.findall(r'\b[a-z]{4,}\b', error_pattern.lower())
+                keywords = list(dict.fromkeys(words))[:4]  # unique, max 4
+
+                new_entry = {
+                    "id": f"R{len(data['corrections']) + 1:03d}",
+                    "trigger_keywords": keywords,
+                    "pitfall": error_pattern[:120],
+                    "fix": fix_description[:200],
+                    "severity": "error",
+                }
+                data["corrections"].append(new_entry)
+                corrections_path.write_text(json.dumps(data, indent=2))
+                logger.info(
+                    f"reflexion: Saved recurring fix pattern '{new_entry['id']}' "
+                    f"to template_corrections.json"
+                )
+            except Exception as e:
+                logger.debug(f"reflexion: Could not save fix pattern: {e}")
+
 
 def get_debugger_tools() -> List[BaseTool]:
     """Get available tools for the debugger."""

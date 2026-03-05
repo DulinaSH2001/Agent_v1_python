@@ -1,3 +1,35 @@
+/**
+ * @component Sidebar
+ * @description Collapsible sidebar with navigation links and active state detection. Import this instead of building a custom sidebar.
+ * @example
+ * ```tsx
+ * import { Sidebar } from "@/components/layout/Sidebar";
+ * import { Header } from "@/components/layout/Header";
+ * import { PageContainer } from "@/components/layout/PageContainer";
+ * import type { NavLink } from "@/types";
+ *
+ * // Custom nav links:
+ * const navLinks: NavLink[] = [
+ *   { href: "/dashboard", label: "Dashboard", icon: "dashboard" },
+ *   { href: "/orders", label: "Orders", icon: "reports", badge: "12" },
+ *   { href: "/users", label: "Users", icon: "users" },
+ *   { href: "/settings", label: "Settings", icon: "settings" },
+ * ];
+ *
+ * // Full app layout (app/dashboard/layout.tsx):
+ * export default function DashboardLayout({ children }: { children: React.ReactNode }) {
+ *   return (
+ *     <div className="flex h-screen overflow-hidden">
+ *       <Sidebar navLinks={navLinks} />
+ *       <div className="flex flex-1 flex-col overflow-hidden">
+ *         <Header breadcrumbs={[{ label: "Dashboard" }]} user={{ name: "Jane Doe", email: "jane@example.com" }} />
+ *         <PageContainer>{children}</PageContainer>
+ *       </div>
+ *     </div>
+ *   );
+ * }
+ * ```
+ */
 "use client";
 
 import Link from "next/link";

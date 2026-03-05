@@ -1,3 +1,25 @@
+/**
+ * @component DataTable
+ * @description Generic sortable, searchable, paginated data table. Always import this instead of creating a new table.
+ * @example
+ * ```tsx
+ * import { DataTable } from "@/components/data/DataTable";
+ * import type { TableColumn } from "@/types";
+ * import { Badge } from "@/components/ui/badge";
+ *
+ * interface User { id: string; name: string; email: string; role: string; }
+ *
+ * const columns: TableColumn<User>[] = [
+ *   { key: "name", header: "Name" },
+ *   { key: "email", header: "Email" },
+ *   { key: "role", header: "Role", render: (v) => <Badge>{String(v)}</Badge> },
+ * ];
+ *
+ * // In your page/component:
+ * <DataTable data={users} columns={columns} searchable pageSize={10} />
+ * <DataTable data={orders} columns={orderColumns} isLoading={isLoading} emptyMessage="No orders yet." />
+ * ```
+ */
 "use client";
 
 import { useState, useMemo } from "react";

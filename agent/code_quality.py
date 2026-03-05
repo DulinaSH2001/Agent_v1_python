@@ -130,13 +130,23 @@ class ReviewSummary:
 # Pattern helpers
 # =============================================================================
 
-# Available Shadcn UI components in the template
-AVAILABLE_SHADCN_COMPONENTS = {
+# Available Shadcn UI components in the template (toast removed — use sonner instead)
+AVAILABLE_SHADCN_COMPONENTS = frozenset({
     "alert", "alert-dialog", "avatar", "badge", "button", "card", "checkbox",
     "dialog", "dropdown-menu", "input", "label", "progress", "scroll-area",
     "select", "separator", "sheet", "skeleton", "switch", "table", "tabs",
-    "textarea", "toast", "tooltip",
-}
+    "textarea", "tooltip",
+})
+
+# Pre-built custom components included in the template — never flag as missing
+AVAILABLE_CUSTOM_COMPONENTS = frozenset({
+    "components/layout/Sidebar",
+    "components/layout/Header",
+    "components/layout/PageContainer",
+    "components/data/DataTable",
+    "components/data/StatCard",
+    "components/data/EmptyState",
+})
 
 # Regex to extract @/components/ui/<name> imports
 SHADCN_IMPORT_RE = re.compile(
@@ -483,10 +493,12 @@ class CodeReviewer:
                 full_component_path = f"components/{import_path}"
 
                 # Check if the file exists (with or without extension)
+                # Also allow pre-built template components that are always present
                 found = (
                     full_component_path in known_paths
                     or f"{full_component_path}/index" in known_paths
                     or any(p.startswith(full_component_path) for p in known_paths)
+                    or full_component_path in AVAILABLE_CUSTOM_COMPONENTS
                 )
 
                 if not found:

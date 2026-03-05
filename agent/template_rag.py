@@ -265,10 +265,13 @@ class TemplateRAG:
             include_metadata=True,
         )
 
+        MIN_SIMILARITY = 0.60
         results: List[Tuple[TemplateChunk, float]] = []
         for match in response.get("matches", []):
             meta = match.get("metadata", {})
             score = float(match.get("score", 0.0))
+            if score < MIN_SIMILARITY:
+                continue
             known_keys = {"chunk_id", "file_path",
                           "chunk_type", "template_name", "content"}
             extra_meta = {k: v for k, v in meta.items() if k not in known_keys}
@@ -280,28 +283,38 @@ class TemplateRAG:
                 template_name=meta.get("template_name", template_name),
                 metadata=extra_meta,
             )
-            results.append((chunk, score))
+            # Boost usage_example chunks for better ranking
+            boosted = _boosted_score(chunk, score)
+            results.append((chunk, boosted))
 
+        results.sort(key=lambda x: x[1], reverse=True)
         _query_cache_set(cache_key, results)
         return results
 
     def format_for_prompt(self, results: List[Tuple[TemplateChunk, float]]) -> str:
-        """Format retrieved chunks into a prompt section."""
+        """Format retrieved chunks into a prompt section with usage examples prioritized."""
         if not results:
             return ""
 
         sections = ["## Retrieved Template Context\n"]
         sections.append(
-            "The following template snippets are most relevant to your task:\n")
+            "The following template snippets are most relevant to your task. "
+            "USAGE EXAMPLE sections show the exact import and usage pattern — follow them precisely.\n"
+        )
 
-        for chunk, score in results:
-            header = f"### {chunk.file_path}"
-            if chunk.metadata.get("declaration"):
-                header += f" — {chunk.metadata['declaration']}"
-            header += f" (relevance: {score:.2f})"
+        for chunk, score in results[:6]:
+            if chunk.chunk_type == "usage_example":
+                component_name = chunk.metadata.get("component_name", chunk.file_path)
+                header = f"### USAGE EXAMPLE: {component_name} (score={score:.2f})"
+                lang = "tsx"
+            else:
+                header = f"### Template: {chunk.file_path}"
+                if chunk.metadata.get("declaration"):
+                    header += f" — {chunk.metadata['declaration']}"
+                header += f" (score={score:.2f}, type={chunk.chunk_type})"
+                lang = "tsx" if chunk.file_path.endswith((".tsx", ".ts")) else "text"
             sections.append(header)
-            sections.append(f"Type: {chunk.chunk_type}")
-            sections.append(f"```\n{chunk.content}\n```\n")
+            sections.append(f"```{lang}\n{chunk.content}\n```\n")
 
         return "\n".join(sections)
 
@@ -325,6 +338,13 @@ class TemplateRAG:
             parts.append(f"CSS section: {chunk.metadata['section']}")
         parts.append(chunk.content)
         return "\n".join(parts)
+
+
+def _boosted_score(chunk: TemplateChunk, score: float) -> float:
+    """Apply a 1.2x boost to usage_example chunks to surface them above raw code chunks."""
+    if chunk.chunk_type == "usage_example" or chunk.metadata.get("is_example"):
+        return min(1.0, score * 1.2)
+    return score
 
 
 # ---------------------------------------------------------------------------

@@ -67,257 +67,13 @@ def _get_ably_rest_channel(channel_name: str) -> Optional[Any]:
 # System Prompts for Code Generation
 # =============================================================================
 
-BUILDER_PROMPT = """You are the Builder, a senior frontend engineer generating production-ready Next.js 15 code.
+BUILDER_PROMPT = """Generate Next.js 15 TypeScript/TSX code.
 
-## Your Role
-Generate TypeScript/TSX code for Next.js 15 applications based on:
-1. The implementation task description
-2. Backend API manifest for data types
-3. Existing file content (for modifications)
+Use: App Router (app/), Server Components, Server Actions (lib/actions.ts), Zod, Shadcn UI, sonner.
+Use pre-built components: Sidebar, Header, PageContainer, DataTable, StatCard, EmptyState from @/components/.
+TypeScript strict mode. No 'any' types. Responsive Tailwind CSS.
 
-## Next.js 15 Compliance Guidelines
-
-### 1. Schema Validation
-Always use Zod for schema validation:
-```typescript
-import { z } from 'zod';
-
-const UserSchema = z.object({
-  id: z.string(),
-  email: z.string().email(),
-  name: z.string().min(1),
-});
-
-type User = z.infer<typeof UserSchema>;
-```
-
-### 2. Server Components
-Use async functions for Server Components:
-```typescript
-export default async function DashboardPage() {
-  const data = await fetchData();
-  return <div>{/* content */}</div>;
-}
-```
-
-### 3. Data Fetching & Caching
-Use fetch with cache options in Server Components:
-```typescript
-// Static (cached forever)
-const data = await fetch('https://api.example.com/data', { cache: 'force-cache' });
-// Revalidate every 60 seconds (ISR)
-const data = await fetch('https://api.example.com/data', { next: { revalidate: 60 } });
-// Dynamic (no cache)
-const data = await fetch('https://api.example.com/data', { cache: 'no-store' });
-```
-Do NOT use `'use cache'` — it is an experimental directive that will cause build failures.
-
-### 4. Server Actions
-Define in lib/actions.ts with 'use server':
-```typescript
-'use server';
-
-import { z } from 'zod';
-
-const CreateUserSchema = z.object({
-  email: z.string().email(),
-  name: z.string(),
-});
-
-export async function createUser(formData: FormData) {
-  const validated = CreateUserSchema.parse({
-    email: formData.get('email'),
-    name: formData.get('name'),
-  });
-  // Action logic
-}
-```
-
-### 5. Shadcn UI Components
-ONLY import from these EXACT files that exist in @/components/ui:
-```typescript
-import { Alert, AlertTitle, AlertDescription } from '@/components/ui/alert';
-import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle, AlertDialogTrigger } from '@/components/ui/alert-dialog';
-import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar';
-import { Badge } from '@/components/ui/badge';
-import { Button } from '@/components/ui/button';
-import { Card, CardContent, CardHeader, CardTitle, CardDescription, CardFooter } from '@/components/ui/card';
-import { Checkbox } from '@/components/ui/checkbox';
-import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger, DialogDescription, DialogFooter, DialogClose } from '@/components/ui/dialog';
-import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuSeparator, DropdownMenuTrigger } from '@/components/ui/dropdown-menu';
-import { Input } from '@/components/ui/input';
-import { Label } from '@/components/ui/label';
-import { Progress } from '@/components/ui/progress';
-import { ScrollArea, ScrollBar } from '@/components/ui/scroll-area';
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
-import { Separator } from '@/components/ui/separator';
-import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetDescription, SheetTrigger, SheetClose } from '@/components/ui/sheet';
-import { Skeleton } from '@/components/ui/skeleton';
-import { Switch } from '@/components/ui/switch';
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
-import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
-import { Textarea } from '@/components/ui/textarea';
-import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
-```
-
-**NEVER** import from `@/components/ui/toast` — it does not exist. For notifications, use sonner:
-```typescript
-import { toast } from 'sonner';
-// Usage: toast.success('Saved!'), toast.error('Failed'), toast('Message')
-```
-
-Do not import from `@/components/ui/header`, `@/components/ui/footer`, `@/components/ui/navbar`,
-`@/components/ui/accordion`, `@/components/ui/popover`,
-`@/components/ui/slider`, `@/components/ui/radio-group`, or any other path not listed above.
-
-### Pre-built Layout & Data Components
-These components are pre-built in the template — ALWAYS import and reuse them instead of creating duplicates:
-```typescript
-// Layout shell — wrap page content in this
-import { PageContainer } from '@/components/layout/PageContainer';
-// Reusable sidebar with nav links
-import { Sidebar } from '@/components/layout/Sidebar';
-// Top header bar with breadcrumb + theme toggle
-import { Header } from '@/components/layout/Header';
-// Generic sortable, paginated data table
-import { DataTable } from '@/components/data/DataTable';
-// KPI metric card (title, value, change%)
-import { StatCard } from '@/components/data/StatCard';
-// Empty state placeholder (icon, title, description, CTA)
-import { EmptyState } from '@/components/data/EmptyState';
-```
-When the task needs a table → use `<DataTable>`. When it needs stats/KPIs → use `<StatCard>`.
-When generating a page with a sidebar layout → use `<Sidebar>` + `<Header>` + `<PageContainer>`.
-Only create NEW custom components for domain-specific logic not covered by the above.
-
-### 6. TypeScript Strict Mode
-- Prefer `unknown` over `any`; never use `any` for props or return types
-- Define explicit interfaces for props
-- Use proper generic types
-
-### 7. File Structure
-- Pages: `app/[route]/page.tsx`
-- Layouts: `app/[route]/layout.tsx`
-- Error boundaries: `app/[route]/error.tsx` (MUST be 'use client')
-- Loading UI: `app/[route]/loading.tsx` (server component, no directive needed)
-- Components: `components/[name].tsx`
-- UI Components: `components/ui/[name].tsx`
-- Actions: `lib/actions.ts` or `lib/actions/[domain].ts`
-- Types: `types/[domain].ts`
-- Utilities: `lib/utils.ts`
-
-### 8. Required patterns for special files
-
-**error.tsx** — use this pattern exactly:
-```typescript
-'use client';
-
-import { useEffect } from 'react';
-import { Button } from '@/components/ui/button';
-
-interface ErrorProps {
-  error: Error & { digest?: string };
-  reset: () => void;
-}
-
-export default function Error({ error, reset }: ErrorProps) {
-  useEffect(() => {
-    console.error(error);
-  }, [error]);
-
-  return (
-    <div className="flex flex-col items-center justify-center min-h-[400px] gap-4">
-      <h2 className="text-xl font-semibold">Something went wrong</h2>
-      <Button onClick={reset}>Try again</Button>
-    </div>
-  );
-}
-```
-
-**loading.tsx** — use this pattern (no 'use client'):
-```typescript
-import { Skeleton } from '@/components/ui/skeleton';
-
-export default function Loading() {
-  return (
-    <div className="space-y-4 p-6">
-      <Skeleton className="h-8 w-48" />
-      <Skeleton className="h-4 w-full" />
-      <Skeleton className="h-4 w-3/4" />
-    </div>
-  );
-}
-```
-
-### 9. Caching
-Do NOT use `'use cache'` directive — it is experimental and will break the build.
-Use `fetch` with `cache` option instead:
-```typescript
-const data = await fetch('/api/data', { cache: 'force-cache' }); // static
-const data = await fetch('/api/data', { next: { revalidate: 60 } }); // ISR
-const data = await fetch('/api/data', { cache: 'no-store' }); // dynamic
-```
-
-### 10. Reserved files — do not generate
-These files already exist in the template and are managed outside this generation:
-- `app/layout.tsx` — do not modify or regenerate
-- `app/page.tsx` — do not modify or regenerate (create custom pages in `app/[route]/page.tsx` instead)
-- `styles/globals.css` — do not modify
-- `tailwind.config.js` — do not modify
-- `next.config.js` — do not modify
-- `tsconfig.json` — do not modify
-
-If you need a home page, create `app/dashboard/page.tsx` or other route-specific pages.
-If you need layout changes beyond the root, create nested `app/[route]/layout.tsx` for specific routes.
-
-### 11. Component Usage Guidelines
-Before using ANY custom component:
-1. **Check the "Available Components" section** provided below the task description
-2. **Verify it exists** in the list with exact name
-3. **Match required props exactly** — do NOT invent prop names or types
-4. **Never hallucinate components** — if a component is not listed, do NOT use it
-
-Common mistake example:
-```typescript
-// ❌ WRONG - Component not in inventory, or props are wrong
-<Header links={...} branding={...} />
-
-// ✅ CORRECT - Use only components from the available list with correct props
-// If Header is not listed, create it in components/Header.tsx first
-```
-
-If you need a component that is NOT in the "Available Components" list:
-- Option A: Create it in `components/[ComponentName].tsx`
-- Option B: Use a Shadcn UI component that IS available
-- Option C: Use simple HTML elements
-
-### 12. API Integration Rules (when manifest is provided)
-When a backend API manifest is provided, follow these rules for data fetching:
-1. Create a `lib/api.ts` helper with typed fetch functions for each manifest endpoint
-2. Use proper error handling: try/catch with user-friendly error states in every data-fetching component
-3. Add loading states using `<Skeleton />` components while data is being fetched
-4. Parse API responses with Zod schemas that match the manifest type definitions
-5. Use environment variable `NEXT_PUBLIC_API_URL` for the base URL (fallback to manifest base URL)
-6. Handle authentication tokens if the manifest specifies auth requirements
-7. For Server Components, use `fetch()` directly with proper cache options
-8. For Client Components, use `useEffect` + `useState` for data fetching with loading/error states
-
-Example API helper pattern:
-```typescript
-// lib/api.ts
-const API_BASE = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3001';
-
-export async function fetchUsers(): Promise<User[]> {
-  const res = await fetch(`${API_BASE}/api/users`, { cache: 'no-store' });
-  if (!res.ok) throw new Error('Failed to fetch users');
-  const data = await res.json();
-  return UserArraySchema.parse(data);
-}
-```
-
-## Output Format
-Return ONLY the TypeScript/TSX code. No markdown formatting, no explanations.
-Start directly with imports or 'use server'/'use client' directive if needed.
+Return ONLY code. No markdown, no explanations.
 """
 
 SAMPLE_DATA_INSTRUCTION = """
@@ -365,6 +121,95 @@ You are modifying an existing file. Please follow these rules:
 
 The current file content is provided below. Modify it according to the task description.
 """
+
+
+# =============================================================================
+# Template Injection — Direct source injection for known pre-built components
+# =============================================================================
+
+# Maps keywords (lowercase) in task descriptions → template file paths.
+# When a task mentions one of these keywords, the template file source is injected
+# directly into the prompt so the LLM has the exact interface to import.
+TEMPLATE_INJECTION_MAP: dict = {
+    "sidebar": "components/layout/Sidebar.tsx",
+    "header bar": "components/layout/Header.tsx",
+    "top header": "components/layout/Header.tsx",
+    "page container": "components/layout/PageContainer.tsx",
+    "data table": "components/data/DataTable.tsx",
+    "datatable": "components/data/DataTable.tsx",
+    "stat card": "components/data/StatCard.tsx",
+    "statcard": "components/data/StatCard.tsx",
+    "kpi card": "components/data/StatCard.tsx",
+    "kpi metric": "components/data/StatCard.tsx",
+    "empty state": "components/data/EmptyState.tsx",
+    "emptystate": "components/data/EmptyState.tsx",
+}
+
+
+def _load_corrections() -> list:
+    """Load known pitfall corrections from template_corrections.json (cached per process)."""
+    try:
+        import json as _json
+        from pathlib import Path as _Path
+        corrections_path = _Path(__file__).parent / "template_corrections.json"
+        if not corrections_path.exists():
+            return []
+        return _json.loads(corrections_path.read_text()).get("corrections", [])
+    except Exception:
+        return []
+
+
+# Module-level cache for corrections (loaded once per process)
+_corrections_cache: list | None = None
+
+
+def _get_relevant_corrections(description: str) -> str:
+    """
+    Return a prompt section with pitfall warnings relevant to the task description.
+    Only injects if 2+ corrections match (reduces noise and jailbreak detection).
+    Loaded once and cached for the process lifetime.
+    """
+    global _corrections_cache
+    if _corrections_cache is None:
+        _corrections_cache = _load_corrections()
+
+    desc_lower = description.lower()
+    relevant = [
+        c for c in _corrections_cache
+        if any(kw in desc_lower for kw in c.get("trigger_keywords", []))
+    ]
+
+    # Only inject if 2+ corrections are relevant (reduces noise)
+    if len(relevant) < 2:
+        return ""
+
+    lines = [
+        f"• [{c['id']}] {c['pitfall']} → {c['fix']}"
+        for c in relevant
+    ]
+    return "## Reference Patterns\n" + "\n".join(lines) + "\n"
+
+
+def _get_template_injection(description: str, template_files: dict) -> str:
+    """
+    Return a prompt section with the actual template source for any pre-built
+    components mentioned in the task description.
+    """
+    desc_lower = description.lower()
+    seen_paths: set = set()
+    injections: list = []
+
+    for keyword, path in TEMPLATE_INJECTION_MAP.items():
+        if keyword in desc_lower and path in template_files and path not in seen_paths:
+            seen_paths.add(path)
+            injections.append(
+                f"## Pre-built Component: `{path}`\nImport and use this component directly.\n"
+                f"```tsx\n{template_files[path]}\n```"
+            )
+
+    if not injections:
+        return ""
+    return "\n\n".join(injections) + "\n"
 
 
 # =============================================================================
@@ -1626,6 +1471,16 @@ async def generation_node(
     for w in op_warnings:
         build_logs.append(f"Plan correction: {w}")
 
+    # Rule-based plan pre-validation (before any LLM calls)
+    try:
+        from agent.plan_validator import validate_plan as _validate_plan
+        _template_files = state.get("template_files", {})
+        plan, plan_warnings = _validate_plan(plan, file_system, _template_files)
+        for w in plan_warnings:
+            build_logs.append(f"Plan validator: {w}")
+    except Exception as _pve:
+        logger.warning(f"generation_node: Plan pre-validation skipped: {_pve}")
+
     # Get LLM
     llm = get_generation_llm()
 
@@ -1789,6 +1644,11 @@ async def generation_node(
         if rag_ctx:
             user_content += f"\n{rag_ctx}\n"
 
+        # Inject pre-built template source for known component patterns (disabled: can trigger content filter)
+        # template_injection = _get_template_injection(description, template_files)
+        # if template_injection:
+        #     user_content += f"\n{template_injection}\n"
+
         if existing_content:
             user_content += f"""
 ## Current File Content (MODIFY this file)
@@ -1796,6 +1656,11 @@ async def generation_node(
 {existing_content}
 ```
 """
+        # Inject known pitfall corrections relevant to this task (disabled: can trigger content filter)
+        # corrections = _get_relevant_corrections(description)
+        # if corrections:
+        #     user_content += f"\n{corrections}\n"
+
         user_content += """
 ## Instructions
 Generate the complete file content. Return ONLY the code, no markdown formatting.
@@ -1832,6 +1697,36 @@ Never invent component prop signatures - only use components as defined.
                     if lines and lines[-1].strip() == "```":
                         lines = lines[:-1]
                     code = "\n".join(lines)
+
+                # Inline quality auto-fix: run rule checks and apply fixes before publish
+                try:
+                    from agent.code_quality import CodeQualityReviewer
+                    reviewer = CodeQualityReviewer()
+                    review = reviewer.review_file(file_path, code, file_system)
+                    if review.fixed_content and review.fixed_content != code:
+                        fixed_count = sum(1 for i in review.issues if i.fix_applied)
+                        code = review.fixed_content
+                        task_logs.append(f"Auto-fixed {fixed_count} issue(s) in {file_path}")
+                    # If errors remain (max 3), do a single targeted LLM correction call
+                    remaining_errors = [i for i in review.issues if i.severity == "error" and not i.fix_applied]
+                    if 0 < len(remaining_errors) <= 3:
+                        error_lines = "\n".join(
+                            f"- {i.rule} (line {i.line}): {i.message}" for i in remaining_errors
+                        )
+                        messages.append(HumanMessage(
+                            content=f"## Fix These Errors\nReturn the COMPLETE corrected file:\n{error_lines}"
+                        ))
+                        correction = await llm.ainvoke(messages, config=config)
+                        corrected = correction.content.strip()
+                        if corrected.startswith("```"):
+                            corr_lines = corrected.split("\n")[1:]
+                            if corr_lines and corr_lines[-1].strip() == "```":
+                                corr_lines = corr_lines[:-1]
+                            corrected = "\n".join(corr_lines)
+                        code = corrected
+                        task_logs.append(f"LLM-corrected {len(remaining_errors)} error(s) in {file_path}")
+                except Exception as _qe:
+                    logger.debug(f"generation_node: Inline quality check skipped for {file_path}: {_qe}")
 
                 task_logs.append(f"Generated: {file_path} ({len(code)} bytes)")
                 logger.info(f"generation_node: Generated {file_path}")

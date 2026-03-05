@@ -30,7 +30,7 @@ class TemplateChunk:
     chunk_id: str
     file_path: str
     content: str
-    chunk_type: str  # "component" | "function" | "config" | "style" | "import_block" | "type" | "full_file"
+    chunk_type: str  # "component" | "function" | "config" | "style" | "import_block" | "type" | "full_file" | "usage_example"
     metadata: Dict[str, Any] = field(default_factory=dict)
     template_name: str = "nextjs-app"
 
@@ -114,6 +114,29 @@ def _chunk_file(file_path: str, content: str, template_name: str) -> List[Templa
         )]
 
 
+def _extract_jsdoc_example(content: str, file_path: str, template_name: str) -> Optional[TemplateChunk]:
+    """
+    Extract a leading JSDoc block containing @example as a dedicated 'usage_example' chunk.
+    Returns None if no such block exists.
+    """
+    match = re.match(r'(/\*\*.*?\*/)', content, re.DOTALL)
+    if not match or '@example' not in match.group(1):
+        return None
+
+    jsdoc = match.group(1)
+    component_match = re.search(r'@component\s+(\w+)', jsdoc)
+    component_name = component_match.group(1) if component_match else Path(file_path).stem
+
+    return TemplateChunk(
+        chunk_id=f"{template_name}:{file_path}:usage_example",
+        file_path=file_path,
+        content=jsdoc,
+        chunk_type="usage_example",
+        metadata={"component_name": component_name, "is_example": True},
+        template_name=template_name,
+    )
+
+
 def _chunk_typescript(file_path: str, content: str, template_name: str) -> List[TemplateChunk]:
     """
     Chunk a TypeScript/TSX file by top-level declarations.
@@ -123,18 +146,26 @@ def _chunk_typescript(file_path: str, content: str, template_name: str) -> List[
     2. Split remaining content on top-level export/const/function boundaries.
     3. If the file is small (< 40 lines), keep as single chunk.
     """
+    # Extract @example JSDoc block first (usage_example chunk)
+    example_chunk = _extract_jsdoc_example(content, file_path, template_name)
+
     lines = content.split("\n")
 
-    # Small files: single chunk
+    # Small files: single chunk (+ usage_example if present)
     if len(lines) < 40:
         chunk_type = _infer_ts_chunk_type(file_path, content)
-        return [_make_chunk(
+        result = [_make_chunk(
             file_path, content, chunk_type,
             template_name=template_name,
             metadata={"line_count": len(lines)},
         )]
+        if example_chunk:
+            result.insert(0, example_chunk)
+        return result
 
     chunks: List[TemplateChunk] = []
+    if example_chunk:
+        chunks.append(example_chunk)
 
     # Find import block boundary
     import_end = 0

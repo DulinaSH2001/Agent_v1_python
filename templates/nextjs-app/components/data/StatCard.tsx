@@ -1,3 +1,20 @@
+/**
+ * @component StatCard
+ * @description KPI metric card with trend indicator. Use for dashboards with stats/KPIs. Always import this instead of creating a new card.
+ * @example
+ * ```tsx
+ * import { StatCard } from "@/components/data/StatCard";
+ * import { DollarSign, Users, ShoppingCart, TrendingUp } from "lucide-react";
+ *
+ * // Grid of KPI cards:
+ * <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
+ *   <StatCard title="Total Revenue" value="$45,231" change={12.5} changeLabel="vs last month" icon={DollarSign} />
+ *   <StatCard title="Active Users" value={2350} change={8.2} icon={Users} />
+ *   <StatCard title="Orders" value={1284} change={-3.1} icon={ShoppingCart} />
+ *   <StatCard title="Growth" value="18.7%" change={4.0} icon={TrendingUp} />
+ * </div>
+ * ```
+ */
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { TrendingUp, TrendingDown, Minus, type LucideIcon } from "lucide-react";
 import { cn, formatNumber } from "@/lib/utils";

@@ -1,3 +1,26 @@
+/**
+ * @component PageContainer
+ * @description Standard page layout wrapper providing consistent padding, max-width, and scroll. Always wrap page content in this instead of adding padding manually.
+ * @example
+ * ```tsx
+ * import { PageContainer } from "@/components/layout/PageContainer";
+ *
+ * // Standard page (max-w-7xl centered):
+ * export default function OrdersPage() {
+ *   return (
+ *     <PageContainer>
+ *       <h1 className="text-2xl font-bold">Orders</h1>
+ *       <DataTable data={orders} columns={columns} />
+ *     </PageContainer>
+ *   );
+ * }
+ *
+ * // Full-width page (no max-width constraint):
+ * <PageContainer fluid>
+ *   <FullWidthChart />
+ * </PageContainer>
+ * ```
+ */
 import { cn } from "@/lib/utils";
 
 interface PageContainerProps {
@@ -6,17 +29,6 @@ interface PageContainerProps {
     /** Use full width instead of max-w container */
     fluid?: boolean;
 }
-
-/**
- * PageContainer — standard page layout wrapper.
- * Wrap page content in this for consistent padding + max-width.
- *
- * @example
- * <PageContainer>
- *   <h1>Dashboard</h1>
- *   <DataTable ... />
- * </PageContainer>
- */
 export function PageContainer({ children, className, fluid = false }: PageContainerProps) {
     return (
         <div

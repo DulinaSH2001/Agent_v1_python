@@ -1,3 +1,26 @@
+/**
+ * @component Header
+ * @description Top navigation bar with breadcrumbs, theme toggle, notifications, and user avatar dropdown. Import this instead of building a custom header.
+ * @example
+ * ```tsx
+ * import { Header } from "@/components/layout/Header";
+ *
+ * // Basic with breadcrumbs:
+ * <Header breadcrumbs={[{ label: "Dashboard" }]} />
+ *
+ * // With nested breadcrumbs and user menu:
+ * <Header
+ *   breadcrumbs={[
+ *     { label: "Dashboard", href: "/dashboard" },
+ *     { label: "Orders" },
+ *   ]}
+ *   user={{ name: "Jane Doe", email: "jane@example.com", avatar: "/avatar.png" }}
+ * />
+ *
+ * // In a layout (combined with Sidebar):
+ * // See Sidebar @example for full layout pattern
+ * ```
+ */
 "use client";
 
 import { useTheme } from "next-themes";

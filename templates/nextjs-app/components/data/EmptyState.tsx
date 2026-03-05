@@ -1,3 +1,23 @@
+/**
+ * @component EmptyState
+ * @description Empty placeholder shown when a list or table has no data. Import this instead of building a custom empty view.
+ * @example
+ * ```tsx
+ * import { EmptyState } from "@/components/data/EmptyState";
+ * import { FileX } from "lucide-react";
+ *
+ * // Basic:
+ * <EmptyState title="No results found" description="Try adjusting your search." />
+ *
+ * // With icon and action:
+ * <EmptyState
+ *   title="No orders yet"
+ *   description="Create your first order to get started."
+ *   icon={FileX}
+ *   action={{ label: "Create Order", onClick: () => router.push("/orders/new") }}
+ * />
+ * ```
+ */
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { type LucideIcon, Inbox } from "lucide-react";

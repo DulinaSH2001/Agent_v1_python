@@ -1,0 +1,40 @@
+{
+  "version": 1,
+  "corrections": [
+    {
+      "id": "C001",
+      "trigger_keywords": ["toast", "notification", "alert message", "toast notification"],
+      "pitfall": "Do NOT use @/components/ui/toast — it was removed from the template",
+      "fix": "Use: import { toast } from 'sonner'  →  toast.success('...') or toast.error('...')",
+      "severity": "error"
+    },
+    {
+      "id": "C002",
+      "trigger_keywords": ["sidebar", "navigation menu", "nav menu", "side navigation"],
+      "pitfall": "Do NOT create a new Sidebar component — it already exists as components/layout/Sidebar.tsx",
+      "fix": "import { Sidebar } from '@/components/layout/Sidebar'  and pass navLinks prop (type NavLink[])",
+      "severity": "warning"
+    },
+    {
+      "id": "C003",
+      "trigger_keywords": ["data table", "list table", "results table", "sortable table", "paginated table"],
+      "pitfall": "Do NOT create a new table component — DataTable<T> already exists in components/data/DataTable.tsx",
+      "fix": "import { DataTable } from '@/components/data/DataTable'  then define TableColumn<T>[] columns array",
+      "severity": "warning"
+    },
+    {
+      "id": "C004",
+      "trigger_keywords": ["stat card", "kpi card", "metric card", "statistics card"],
+      "pitfall": "Do NOT create a new KPI/stats card — StatCard already exists in components/data/StatCard.tsx",
+      "fix": "import { StatCard } from '@/components/data/StatCard'  with title, value, change, icon props",
+      "severity": "warning"
+    },
+    {
+      "id": "C005",
+      "trigger_keywords": ["empty state", "no results", "no data", "empty list"],
+      "pitfall": "Do NOT create a new empty state view — EmptyState already exists in components/data/EmptyState.tsx",
+      "fix": "import { EmptyState } from '@/components/data/EmptyState'  with title, description, icon, action props",
+      "severity": "warning"
+    }
+  ]
+}
