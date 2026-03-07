@@ -40,6 +40,19 @@ PROTECTED_FILES = frozenset({
     "components/data/DataTable.tsx",
     "components/data/StatCard.tsx",
     "components/data/EmptyState.tsx",
+    # Shadow paths — flat or kebab-case variants the LLM creates instead of
+    # using the template components above. Block creation so the pre-built
+    # components are the only option.
+    "components/DataTable.tsx",
+    "components/data-table.tsx",
+    "components/StatCard.tsx",
+    "components/stat-card.tsx",
+    "components/EmptyState.tsx",
+    "components/empty-state.tsx",
+    "components/Header.tsx",
+    "components/Sidebar.tsx",
+    "components/PageContainer.tsx",
+    "components/page-container.tsx",
 })
 
 

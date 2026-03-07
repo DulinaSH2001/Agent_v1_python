@@ -2,6 +2,7 @@
  * Common Type Definitions
  * Extend these types for your application.
  */
+import type { ReactNode } from "react";
 
 // ─── Base ─────────────────────────────────────────────────────────────────────
 
@@ -62,8 +63,8 @@ export interface NavLink {
 
 export type SortDirection = "asc" | "desc";
 
-export interface SortConfig<T> {
-    key: keyof T;
+export interface SortConfig {
+    key: string;
     direction: SortDirection;
 }
 
@@ -83,11 +84,11 @@ export interface PaginatedResult<T> {
 /** Column definition for DataTable<T> */
 export interface TableColumn<T> {
     /** Property key of the data row */
-    key: keyof T | string;
+    key: string;
     /** Column header label */
     header: string;
     /** Custom cell renderer — receives (value, row) */
-    render?: (value: T[keyof T], row: T) => React.ReactNode;
+    render?: (value: unknown, row: T) => ReactNode;
     /** Set to false to disable sorting for this column (default: true) */
     sortable?: boolean;
 }

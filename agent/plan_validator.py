@@ -116,6 +116,33 @@ def validate_plan(
                 )
                 break  # Only apply the first matching hint per task
 
+    # ── Rule 3b: Correct component import paths in task descriptions ─────────
+    # Prevents the LLM from generating '@/components/Header' when the correct
+    # path is '@/components/layout/Header' (template components live in subdirs).
+    _FLAT_IMPORT_FIXES = {
+        "@/components/Header": "@/components/layout/Header",
+        "@/components/Sidebar": "@/components/layout/Sidebar",
+        "@/components/PageContainer": "@/components/layout/PageContainer",
+        "@/components/DataTable": "@/components/data/DataTable",
+        "@/components/StatCard": "@/components/data/StatCard",
+        "@/components/EmptyState": "@/components/data/EmptyState",
+        # Kebab-case variants
+        "@/components/data-table": "@/components/data/DataTable",
+        "@/components/stat-card": "@/components/data/StatCard",
+        "@/components/empty-state": "@/components/data/EmptyState",
+        "@/components/page-container": "@/components/layout/PageContainer",
+    }
+    for task in corrected:
+        desc = task.get("description", "")
+        for wrong, correct in _FLAT_IMPORT_FIXES.items():
+            if wrong in desc:
+                desc = desc.replace(wrong, correct)
+                warnings.append(
+                    f"Corrected import path in task '{task.get('file_path', '?')}': "
+                    f"'{wrong}' → '{correct}'"
+                )
+        task["description"] = desc
+
     # ── Rule 4: Path convention check ────────────────────────────────────────
     for task in corrected:
         fp = task.get("file_path", "")

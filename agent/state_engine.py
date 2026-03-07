@@ -102,6 +102,8 @@ class AgentState(TypedDict):
     visual_context: Optional[Dict[str, Any]]
     # Data mode: "real_api" (connect to manifest endpoints) or "sample_data" (use inline mock data)
     data_mode: str
+    # API base URL provided by the user when data_mode is "real_api" (e.g. "http://localhost:8080")
+    api_base_url: Optional[str]
     # RAG retrieval metadata for debugging and observability
     retrieval_metadata: Dict[str, Any]
 
@@ -646,5 +648,6 @@ def get_initial_state(
         modification_targets=[],
         delta_mode=False,
         data_mode="real_api",
+        api_base_url=None,
         retrieval_metadata={},
     )

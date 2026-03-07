@@ -67,7 +67,7 @@ class ConversationMemory:
         try:
             import aiohttp
 
-            endpoint = f"{self.backend_url}/api/v1/agents/{job_id}/context"
+            endpoint = f"{self.backend_url}/api/v1/generate/agents/{job_id}/context"
             async with aiohttp.ClientSession() as session:
                 async with session.get(endpoint, headers=self._get_headers(), timeout=15) as response:
                     if response.status == 200:
@@ -109,7 +109,7 @@ class ConversationMemory:
             import aiohttp
 
             endpoint = (
-                f"{self.backend_url}/api/v1/projects/"
+                f"{self.backend_url}/api/v1/generate/projects/"
                 f"{org_slug}/{project_slug}/generation-history"
             )
             async with aiohttp.ClientSession() as session:

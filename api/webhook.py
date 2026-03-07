@@ -165,6 +165,8 @@ class GenerateRequest(BaseModel):
         default=None, description="Visual editor context: selected element info and style changes")
     data_mode: Optional[str] = Field(
         default="real_api", description="Data mode: 'real_api' or 'sample_data'")
+    api_base_url: Optional[str] = Field(
+        default=None, description="User-provided backend base URL for real_api mode (e.g. 'http://localhost:8080')")
 
 
 class GenerateResponse(BaseModel):
@@ -478,6 +480,7 @@ async def run_generation_task(
     project_slug: Optional[str],
     visual_context: Optional[Dict[str, Any]] = None,
     data_mode: Optional[str] = "real_api",
+    api_base_url: Optional[str] = None,
 ):
     """Background task to run the agent and publish status updates."""
     try:
@@ -527,6 +530,9 @@ async def run_generation_task(
         # Attach data mode (real_api or sample_data)
         if data_mode:
             initial_state["data_mode"] = data_mode
+        # Attach user-provided API base URL (used in real_api mode)
+        if api_base_url:
+            initial_state["api_base_url"] = api_base_url
 
         # Get config using job_id as thread_id
         config = get_graph_config(job_id)
@@ -717,6 +723,7 @@ async def start_generation(
         project_slug=request.project_slug,
         visual_context=request.visual_context,
         data_mode=request.data_mode,
+        api_base_url=request.api_base_url,
     )
 
     return GenerateResponse(

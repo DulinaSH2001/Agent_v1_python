@@ -38,6 +38,9 @@ import { ChevronUp, ChevronDown, ChevronsUpDown, Search } from "lucide-react";
 import { cn } from "@/lib/utils";
 import type { TableColumn, SortConfig, SortDirection } from "@/types";
 
+// Internal row accessor — safe with T extends Record<string, any>
+const _get = (row: Record<string, any>, key: string) => row[key];
+
 interface DataTableProps<T> {
     data: T[];
     columns: TableColumn<T>[];
@@ -55,7 +58,7 @@ function SortIcon({ direction }: { direction?: SortDirection }) {
     return <ChevronsUpDown className="ml-1 h-3.5 w-3.5 opacity-40" />;
 }
 
-export function DataTable<T extends Record<string, unknown>>({
+export function DataTable<T extends Record<string, any>>({
     data,
     columns,
     isLoading = false,
@@ -66,7 +69,7 @@ export function DataTable<T extends Record<string, unknown>>({
     emptyMessage = "No results found.",
 }: DataTableProps<T>) {
     const [search, setSearch] = useState("");
-    const [sort, setSort] = useState<SortConfig<T> | null>(null);
+    const [sort, setSort] = useState<SortConfig | null>(null);
     const [page, setPage] = useState(0);
 
     const filtered = useMemo(() => {
@@ -74,7 +77,7 @@ export function DataTable<T extends Record<string, unknown>>({
         const q = search.toLowerCase();
         return data.filter((row) =>
             columns.some((col) => {
-                const val = row[col.key as keyof T];
+                const val = _get(row as Record<string, any>, col.key);
                 return String(val ?? "").toLowerCase().includes(q);
             })
         );
@@ -83,8 +86,8 @@ export function DataTable<T extends Record<string, unknown>>({
     const sorted = useMemo(() => {
         if (!sort) return filtered;
         return [...filtered].sort((a, b) => {
-            const av = a[sort.key as keyof T];
-            const bv = b[sort.key as keyof T];
+            const av = _get(a as Record<string, any>, sort.key);
+            const bv = _get(b as Record<string, any>, sort.key);
             const cmp = String(av ?? "") < String(bv ?? "") ? -1 : 1;
             return sort.direction === "asc" ? cmp : -cmp;
         });
@@ -97,7 +100,7 @@ export function DataTable<T extends Record<string, unknown>>({
 
     const totalPages = Math.ceil(sorted.length / pageSize);
 
-    function toggleSort(key: keyof T) {
+    function toggleSort(key: string) {
         setSort((prev) => {
             if (prev?.key === key) {
                 if (prev.direction === "asc") return { key, direction: "desc" };
@@ -165,7 +168,7 @@ export function DataTable<T extends Record<string, unknown>>({
                                 <TableHead
                                     key={String(col.key)}
                                     className={cn(col.sortable !== false && "cursor-pointer select-none")}
-                                    onClick={() => col.sortable !== false && toggleSort(col.key as keyof T)}
+                                    onClick={() => col.sortable !== false && toggleSort(col.key)}
                                 >
                                     <span className="flex items-center">
                                         {col.header}
@@ -199,8 +202,8 @@ export function DataTable<T extends Record<string, unknown>>({
                                     {columns.map((col) => (
                                         <TableCell key={String(col.key)}>
                                             {col.render
-                                                ? col.render(row[col.key as keyof T], row)
-                                                : String(row[col.key as keyof T] ?? "")}
+                                                ? col.render(_get(row as Record<string, any>, col.key), row)
+                                                : String(_get(row as Record<string, any>, col.key) ?? "")}
                                         </TableCell>
                                     ))}
                                 </TableRow>

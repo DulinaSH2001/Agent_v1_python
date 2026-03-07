@@ -77,22 +77,29 @@ Return ONLY code. No markdown, no explanations.
 """
 
 SAMPLE_DATA_INSTRUCTION = """
-## DATA MODE: Sample Data
-Instead of fetching from API endpoints, generate realistic inline mock data for all components.
-- Use static arrays/objects with realistic sample values (names, emails, dates, prices, etc.)
-- No fetch() calls or API requests.
-- Populate the full UI with sample content so the user can see the complete design.
-- Place mock data in lib/mock-data.ts for easy replacement later.
-- Use TypeScript types that match the manifest schemas so switching to real API is straightforward.
+## DATA MODE: Sample Data (No Backend)
+Generate all data as inline TypeScript constants — no fetch() calls, no API requests.
+- Define ALL mock data in lib/mock-data.ts as exported const arrays/objects with realistic values (names, emails, dates, amounts, statuses, IDs)
+- Import from lib/mock-data.ts in every page/component that needs data
+- Do NOT use fetch(), axios, useQuery, SWR, or any network calls anywhere
+- Use TypeScript interfaces that match the intended API shape so switching to real API later is easy
+- Populate the full UI with enough sample rows/items so the user sees a complete, realistic design
 """
 
-REAL_API_INSTRUCTION = """
+
+def get_real_api_instruction(api_base_url: str = None) -> str:
+    """Return the REAL_API_INSTRUCTION with the correct base URL."""
+    if api_base_url:
+        base_url_line = f"- Base URL: `{api_base_url}` — hardcode this as the default in lib/api.ts and also expose it as NEXT_PUBLIC_API_URL in .env.local"
+    else:
+        base_url_line = "- Base URL: read from `process.env.NEXT_PUBLIC_API_URL` (add to .env.local)"
+    return f"""
 ## DATA MODE: Real API Integration
 Connect to real backend API endpoints as defined in the manifest.
 - Create typed fetch functions in `lib/api.ts` for every manifest endpoint
+{base_url_line}
 - Use proper loading states, error handling, and empty states
 - Parse responses with Zod for runtime type safety
-- Use `NEXT_PUBLIC_API_URL` environment variable for the base URL
 - Add authentication headers if the manifest specifies auth
 """
 
@@ -1581,6 +1588,7 @@ async def generation_node(
     semaphore = asyncio.Semaphore(GENERATION_BATCH_SIZE)
 
     data_mode = state.get("data_mode", "real_api")
+    api_base_url = state.get("api_base_url", None)
 
     async def _generate_one_task(task: dict, task_index: int) -> tuple:
         """
@@ -1611,7 +1619,7 @@ async def generation_node(
         if data_mode == "sample_data":
             sys_prompt += SAMPLE_DATA_INSTRUCTION
         elif manifest:
-            sys_prompt += REAL_API_INSTRUCTION
+            sys_prompt += get_real_api_instruction(api_base_url)
 
         existing_content = ""
         if task_type == "modify" and file_path in file_system:

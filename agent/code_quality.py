@@ -148,6 +148,32 @@ AVAILABLE_CUSTOM_COMPONENTS = frozenset({
     "components/data/EmptyState",
 })
 
+# Flat import paths the agent commonly generates → correct subpaths in the template
+# e.g. '@/components/Header' should be '@/components/layout/Header'
+# Includes both PascalCase and kebab-case variants the LLM tends to generate
+FLAT_COMPONENT_PATH_MAP: dict[str, str] = {
+    "Header": "layout/Header",
+    "Sidebar": "layout/Sidebar",
+    "PageContainer": "layout/PageContainer",
+    "DataTable": "data/DataTable",
+    "StatCard": "data/StatCard",
+    "EmptyState": "data/EmptyState",
+    # Kebab-case variants (shadcn-style) the LLM sometimes generates
+    "data-table": "data/DataTable",
+    "stat-card": "data/StatCard",
+    "empty-state": "data/EmptyState",
+    "page-container": "layout/PageContainer",
+}
+
+# Pre-compiled regex: matches `from '@/components/<Name>'` for each flat name
+# (handles both single and double quotes)
+_FLAT_COMPONENT_IMPORT_RE = re.compile(
+    r"from\s+(['\"])@/components/("
+    + "|".join(re.escape(k) for k in FLAT_COMPONENT_PATH_MAP)
+    + r")(['\"])",
+    re.MULTILINE,
+)
+
 # Regex to extract @/components/ui/<name> imports
 SHADCN_IMPORT_RE = re.compile(
     r"from\s+['\"]@/components/ui/([a-zA-Z0-9_-]+)['\"]", re.MULTILINE
@@ -227,6 +253,9 @@ class CodeReviewer:
             issues = self.check_html_nesting(working_content)
             result.issues.extend(issues)
 
+        issues, working_content = self.check_flat_component_imports(working_content)
+        result.issues.extend(issues)
+
         issues, working_content = self.check_shadcn_import_paths(working_content)
         result.issues.extend(issues)
 
@@ -287,6 +316,42 @@ class CodeReviewer:
             content = "'use client';\n\n" + content
             issue.fix_applied = True
             issues.append(issue)
+
+        return issues, content
+
+    # -------------------------------------------------------------------------
+    # Check: flat component import paths (auto-fix to correct subpaths)
+    # e.g. '@/components/Header' → '@/components/layout/Header'
+    # -------------------------------------------------------------------------
+    def check_flat_component_imports(
+        self, content: str
+    ) -> Tuple[List[QualityIssue], str]:
+        issues: List[QualityIssue] = []
+
+        def _replace(m: re.Match) -> str:
+            quote = m.group(1)
+            flat_name = m.group(2)
+            correct = FLAT_COMPONENT_PATH_MAP[flat_name]
+            return f"from {quote}@/components/{correct}{quote}"
+
+        new_content, n_subs = _FLAT_COMPONENT_IMPORT_RE.subn(_replace, content)
+        if n_subs:
+            for m in _FLAT_COMPONENT_IMPORT_RE.finditer(content):
+                flat_name = m.group(2)
+                correct = FLAT_COMPONENT_PATH_MAP[flat_name]
+                line = content[:m.start()].count('\n') + 1
+                issues.append(QualityIssue(
+                    rule="wrong_component_subpath",
+                    severity="error",
+                    line=line,
+                    message=(
+                        f"Import '@/components/{flat_name}' should be "
+                        f"'@/components/{correct}' (template component lives in subdir)"
+                    ),
+                    auto_fixable=True,
+                    fix_applied=True,
+                ))
+            content = new_content
 
         return issues, content
 
