@@ -206,8 +206,12 @@ def get_planning_llm(
     # Check for Azure OpenAI configuration
     azure_endpoint = os.getenv("AZURE_OPENAI_ENDPOINT")
     azure_key = os.getenv("AZURE_OPENAI_API_KEY")
-    azure_deployment = os.getenv("AZURE_OPENAI_DEPLOYMENT_NAME", "gpt-4o")
-    azure_version = os.getenv("AZURE_OPENAI_API_VERSION", "2025-01-01-preview")
+    azure_deployment = os.getenv("AZURE_OPENAI_DEPLOYMENT_NAME", "gpt-5.2-chat")
+    azure_version = os.getenv("AZURE_OPENAI_API_VERSION", "2024-05-01-preview")
+
+    # GPT-5.2 only supports temperature=1 (default)
+    if "gpt-5.2" in azure_deployment.lower():
+        temperature = 1.0
 
     if azure_endpoint and azure_key:
         try:
@@ -236,7 +240,7 @@ def get_planning_llm(
 
     logger.info("Using standard OpenAI API")
     return ChatOpenAI(
-        model="gpt-4o",
+        model="gpt-5.2",
         temperature=temperature,
         streaming=streaming,
         api_key=api_key,

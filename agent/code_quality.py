@@ -133,7 +133,7 @@ class ReviewSummary:
 # Available Shadcn UI components in the template (toast removed — use sonner instead)
 AVAILABLE_SHADCN_COMPONENTS = frozenset({
     "alert", "alert-dialog", "avatar", "badge", "button", "card", "checkbox",
-    "dialog", "dropdown-menu", "input", "label", "progress", "scroll-area",
+    "dialog", "dropdown-menu", "form", "input", "label", "progress", "scroll-area",
     "select", "separator", "sheet", "skeleton", "switch", "table", "tabs",
     "textarea", "tooltip",
 })
@@ -369,7 +369,8 @@ class CodeReviewer:
             match = pattern.search(content)
             if match:
                 line = content[:match.start()].count('\n') + 1
-                pkg = match.group(0).split("'")[1].split('"')[0]
+                pkg_match = re.search(r"['\"]([^'\"]+)['\"]", match.group(0))
+                pkg = pkg_match.group(1) if pkg_match else "unknown"
                 issues.append(QualityIssue(
                     rule="large_barrel_import",
                     severity="warning",

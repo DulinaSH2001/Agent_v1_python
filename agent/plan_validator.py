@@ -163,6 +163,35 @@ def validate_plan(
                 f"Auto-added loading.tsx task for async route '{route_dir}'."
             )
 
+    # ── Rule 6: Route group path conflict detection ───────────────────────────
+    # Next.js strips (group)/ from URLs, so app/(admin)/orders/page.tsx and
+    # app/(shop)/orders/page.tsx both resolve to /orders — a fatal build error.
+    # Fix: insert the group name as a real path segment for conflicting files.
+    resolved_map: dict[str, list[int]] = {}
+    for i, task in enumerate(corrected):
+        fp = task.get("file_path", "")
+        if not fp.startswith("app/"):
+            continue
+        # Compute URL-resolved path by stripping all (group)/ segments
+        resolved = re.sub(r"\([^)]+\)/", "", fp)
+        resolved_map.setdefault(resolved, []).append(i)
+
+    for resolved, indices in resolved_map.items():
+        if len(indices) < 2:
+            continue
+        # Keep the first task as-is; rename the rest
+        for i in indices[1:]:
+            fp = corrected[i]["file_path"]
+            grp_match = re.search(r"\(([^)]+)\)", fp)
+            grp_name = grp_match.group(1) if grp_match else "section"
+            # Insert group name as a real path segment after the first (group)/
+            fixed = re.sub(r"(\([^)]+\)/)", rf"\1{grp_name}/", fp, count=1)
+            warnings.append(
+                f"Route conflict: '{fp}' resolves to same URL as another page. "
+                f"Renamed to '{fixed}'."
+            )
+            corrected[i]["file_path"] = fixed
+
     logger.info(
         f"plan_validator: {len(warnings)} correction(s) applied. "
         f"Plan: {len(plan)} → {len(corrected)} tasks."
