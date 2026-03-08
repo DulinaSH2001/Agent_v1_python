@@ -198,13 +198,7 @@ Return a JSON array of fix tasks. Each task should have:
 3. Prioritize fixes that unblock other errors
 4. Fix the root cause: do not create a @/components/ui/<custom> file — fix the import instead
 5. Suggest no more than 5 fixes at once
-6. Reserved files — do not suggest modifications to:
-   - `app/layout.tsx` — If error references this, the issue is with generated code that imports from wrong path. Fix the generated file instead.
-   - `app/page.tsx` — If error references this, fix the generated code that modified it. Suggest reverting or fixing to use route-specific pages.
-   - `styles/globals.css` — do not suggest changes
-   - `tailwind.config.js` — do not suggest changes
-   - `next.config.js` — do not suggest changes
-   - `tsconfig.json` — do not suggest changes
+6. You may fix ANY file including layout.tsx, package.json, config files, etc. Fix the root cause wherever it is.
 """
 
 
@@ -281,6 +275,7 @@ CATEGORY_PROMPTS: Dict[str, str] = {
 - Prefer updating the interface over type assertions (`as`)
 - For missing properties, add them to the interface or make them optional (`?:`)
 - For function arguments, check if the call-site or the signature is wrong
+- For PageProps / params type error: change `params: { X: string }` to `params: Promise<{ X: string }>` and add `const { X } = await params` inside the function body (Next.js 15 breaking change).
 """,
     "runtime_errors": """
 ## Focus: Runtime / Hydration Errors

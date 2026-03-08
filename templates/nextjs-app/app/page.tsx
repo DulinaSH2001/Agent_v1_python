@@ -1,9 +1,9 @@
 import { Header } from "@/components/layout/Header";
 import { PageContainer } from "@/components/layout/PageContainer";
 import { StatCard } from "@/components/data/StatCard";
-import { DataTable } from "@/components/data/DataTable";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { OrdersTable } from "@/app/orders-table";
 import {
     Users,
     DollarSign,
@@ -11,52 +11,15 @@ import {
     TrendingUp,
     Plus,
 } from "lucide-react";
-import type { TableColumn } from "@/types";
 
 // Sample data — replace with real data fetching
-interface Order {
-    id: string;
-    customer: string;
-    status: "pending" | "completed" | "cancelled";
-    amount: number;
-    date: string;
-}
-
-const sampleOrders: Order[] = [
-    { id: "ORD-001", customer: "Alice Johnson", status: "completed", amount: 124.99, date: "2025-03-01" },
-    { id: "ORD-002", customer: "Bob Smith", status: "pending", amount: 59.00, date: "2025-03-02" },
-    { id: "ORD-003", customer: "Carol White", status: "completed", amount: 349.50, date: "2025-03-02" },
-    { id: "ORD-004", customer: "David Brown", status: "cancelled", amount: 89.99, date: "2025-03-03" },
-    { id: "ORD-005", customer: "Eve Davis", status: "pending", amount: 210.00, date: "2025-03-03" },
-    { id: "ORD-006", customer: "Frank Miller", status: "completed", amount: 175.25, date: "2025-03-04" },
-];
-
-const statusStyles: Record<Order["status"], string> = {
-    completed: "bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400",
-    pending: "bg-yellow-100 text-yellow-700 dark:bg-yellow-900/30 dark:text-yellow-400",
-    cancelled: "bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-400",
-};
-
-const orderColumns: TableColumn<Order>[] = [
-    { key: "id", header: "Order ID" },
-    { key: "customer", header: "Customer" },
-    {
-        key: "status",
-        header: "Status",
-        render: (value) => (
-            <span
-                className={`inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium capitalize ${statusStyles[value as Order["status"]]}`}
-            >
-                {String(value)}
-            </span>
-        ),
-    },
-    {
-        key: "amount",
-        header: "Amount",
-        render: (value) => `$${Number(value).toFixed(2)}`,
-    },
-    { key: "date", header: "Date" },
+const sampleOrders = [
+    { id: "ORD-001", customer: "Alice Johnson", status: "completed" as const, amount: 124.99, date: "2025-03-01" },
+    { id: "ORD-002", customer: "Bob Smith", status: "pending" as const, amount: 59.00, date: "2025-03-02" },
+    { id: "ORD-003", customer: "Carol White", status: "completed" as const, amount: 349.50, date: "2025-03-02" },
+    { id: "ORD-004", customer: "David Brown", status: "cancelled" as const, amount: 89.99, date: "2025-03-03" },
+    { id: "ORD-005", customer: "Eve Davis", status: "pending" as const, amount: 210.00, date: "2025-03-03" },
+    { id: "ORD-006", customer: "Frank Miller", status: "completed" as const, amount: 175.25, date: "2025-03-04" },
 ];
 
 export default async function HomePage() {
@@ -123,12 +86,7 @@ export default async function HomePage() {
                         <h2 className="text-lg font-semibold">Recent Orders</h2>
                         <Badge variant="secondary">{sampleOrders.length} orders</Badge>
                     </div>
-                    <DataTable
-                        data={sampleOrders}
-                        columns={orderColumns}
-                        searchPlaceholder="Search orders..."
-                        pageSize={5}
-                    />
+                    <OrdersTable data={sampleOrders} />
                 </div>
             </PageContainer>
         </div>

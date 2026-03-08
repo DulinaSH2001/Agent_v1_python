@@ -277,6 +277,10 @@ class CodeReviewer:
         issues, working_content = self.check_unused_imports(working_content)
         result.issues.extend(issues)
 
+        # Dynamic route params check (Next.js 15: params is a Promise)
+        issues, working_content = self.check_dynamic_route_params(working_content, file_path)
+        result.issues.extend(issues)
+
         # Recalculate counts
         result.error_count = sum(1 for i in result.issues if i.severity == "error")
         result.warning_count = sum(1 for i in result.issues if i.severity == "warning")
@@ -686,6 +690,61 @@ class CodeReviewer:
                 ))
 
         return issues, content
+
+    # -------------------------------------------------------------------------
+    # Check: Next.js 15 dynamic route params must be Promise
+    # -------------------------------------------------------------------------
+    def check_dynamic_route_params(
+        self, content: str, file_path: str
+    ) -> Tuple[List[QualityIssue], str]:
+        """Detect and auto-fix legacy sync params pattern in dynamic route pages."""
+        issues: List[QualityIssue] = []
+        # Only applies to dynamic route files containing a [param] segment
+        if not re.search(r"app/.*\[.+\].*/(?:page|layout)\.tsx$", file_path):
+            return issues, content
+
+        # Pattern: params: { X: string } or params: { X: string; } (with/without semicolon,
+        # single or multi-line) NOT already wrapped in Promise<...>
+        sync_params_re = re.compile(
+            r"params:\s*\{\s*(\w+)\s*:\s*string[\s;]*\}(?!\s*>)",
+            re.DOTALL,
+        )
+        m = sync_params_re.search(content)
+        if not m:
+            return issues, content
+
+        param_name = m.group(1)
+        # Auto-fix: replace sync params type with Promise<{ X: string }>
+        fixed = sync_params_re.sub(
+            f"params: Promise<{{ {param_name}: string }}>", content
+        )
+        # Ensure the component function is async (required for await params)
+        fixed = re.sub(
+            r"export default function (\w+)\(",
+            r"export default async function \1(",
+            fixed,
+            count=1,
+        )
+        # Add `const { param } = await params;` inside the function body if missing
+        if "await params" not in fixed:
+            fixed = re.sub(
+                r"(export default async function \w+\s*\([^)]*\)\s*\{)",
+                rf"\1\n  const {{ {param_name} }} = await params;",
+                fixed,
+                count=1,
+            )
+        issues.append(QualityIssue(
+            rule="dynamic_route_params",
+            severity="error",
+            line=None,
+            message=(
+                f"Next.js 15: params must be Promise<{{...}}>. "
+                f"Auto-fixed '{param_name}' to async params pattern."
+            ),
+            auto_fixable=True,
+            fix_applied=True,
+        ))
+        return issues, fixed
 
     # -------------------------------------------------------------------------
     # Batch review

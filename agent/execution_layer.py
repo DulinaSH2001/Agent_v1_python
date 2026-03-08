@@ -72,15 +72,80 @@ BUILDER_PROMPT = """Generate Next.js 15 TypeScript/TSX code.
 Use: App Router (app/), Server Components, Server Actions (lib/actions.ts), Zod, Shadcn UI, sonner.
 Use pre-built components: Sidebar, Header, PageContainer, DataTable, StatCard, EmptyState from @/components/.
 TypeScript strict mode. No 'any' types. Responsive Tailwind CSS.
+For App Router dynamic routes (app/**/[param]/**), use Next.js 15 async params shape:
+  - REQUIRED: `params: Promise<{ param: string }>` and `const { param } = await params`
+  - FORBIDDEN: legacy sync `params: { param: string }` in server files.
+Route groups: app/(group)/path/page.tsx and app/path/page.tsx resolve to the SAME URL.
+  - NEVER create both; pick one location only.
+  - FORBIDDEN: having app/(shop)/products/[slug]/page.tsx AND app/products/[slug]/page.tsx simultaneously.
+Canonical pattern:
+```tsx
+type PageProps = { params: Promise<{ slug: string }> };
+
+export default async function Page({ params }: PageProps) {
+  const { slug } = await params;
+  return <div>{slug}</div>;
+}
+```
+
+ORM / database guardrail: NEVER use Prisma, Drizzle, TypeORM, Sequelize, Mongoose, or any ORM/database client.
+  - FORBIDDEN: `import { PrismaClient }`, `import prisma`, `@prisma/client`, `prisma.*.findMany`, `prisma.*.create`, etc.
+  - REQUIRED: define all data as exported `const` arrays/objects in `lib/data.ts`. No DB calls, no migrations, no schema files.
+  - Canonical data pattern:
+    ```ts
+    // lib/data.ts
+    export const products: Product[] = [
+      { id: '1', name: 'Widget', price: 29.99, category: 'Tools' },
+    ];
+    ```
+  - Import directly: `import { products } from '@/lib/data'`
+
+Payment / checkout pages: NEVER use Stripe, PayPal, Braintree, or any external payment SDK.
+  - FORBIDDEN: `@stripe/stripe-js`, `@stripe/react-stripe-js`, `loadStripe`, `Elements`, `PaymentElement`, `CardElement`.
+  - REQUIRED: build a simple, self-contained payment form using only React state + Shadcn UI + react-hook-form + Zod.
+  - The form must collect: cardholder name, card number (16 digits), expiry (MM/YY), CVV (3-4 digits).
+  - Validate all fields with Zod. Show inline field errors. Show a loading spinner on submit.
+  - On submit call a Server Action in lib/actions.ts that accepts the form data (never log raw card data).
+  - No external payment dependencies in "dependencies" — the base template already has react-hook-form and Zod.
+Canonical payment form skeleton:
+```tsx
+'use client';
+import { useForm } from 'react-hook-form';
+import { zodResolver } from '@hookform/resolvers/zod';
+import { z } from 'zod';
+import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
+import { processPayment } from '@/lib/actions';
+
+const schema = z.object({
+  name: z.string().min(2),
+  cardNumber: z.string().regex(/^\d{16}$/, 'Must be 16 digits'),
+  expiry: z.string().regex(/^(0[1-9]|1[0-2])\/\d{2}$/, 'MM/YY'),
+  cvv: z.string().regex(/^\d{3,4}$/),
+});
+
+export default function PaymentForm() {
+  const { register, handleSubmit, formState: { errors, isSubmitting } } = useForm({ resolver: zodResolver(schema) });
+  return (
+    <form onSubmit={handleSubmit(processPayment)} className="space-y-4 max-w-md">
+      <Input {...register('name')} placeholder="Cardholder name" />
+      {errors.name && <p className="text-destructive text-sm">{errors.name.message}</p>}
+      {/* repeat for cardNumber, expiry, cvv */}
+      <Button type="submit" disabled={isSubmitting}>{isSubmitting ? 'Processing…' : 'Pay now'}</Button>
+    </form>
+  );
+}
+```
 
 Return ONLY code. No markdown, no explanations.
 """
 
 SAMPLE_DATA_INSTRUCTION = """
 ## DATA MODE: Sample Data (No Backend)
-Generate all data as inline TypeScript constants — no fetch() calls, no API requests.
-- Define ALL mock data in lib/mock-data.ts as exported const arrays/objects with realistic values (names, emails, dates, amounts, statuses, IDs)
-- Import from lib/mock-data.ts in every page/component that needs data
+Generate all data as inline TypeScript constants — no fetch() calls, no API requests, no ORM.
+- FORBIDDEN: Prisma, Drizzle, TypeORM, Sequelize, Mongoose — any ORM or DB client.
+- Define ALL mock data in lib/data.ts as exported const arrays/objects with realistic values (names, emails, dates, amounts, statuses, IDs)
+- Import from lib/data.ts in every page/component that needs data
 - Do NOT use fetch(), axios, useQuery, SWR, or any network calls anywhere
 - Use TypeScript interfaces that match the intended API shape so switching to real API later is easy
 - Populate the full UI with enough sample rows/items so the user sees a complete, realistic design
@@ -102,6 +167,7 @@ Connect to real backend API endpoints as defined in the manifest.
 - Parse responses with Zod for runtime type safety
 - Add authentication headers if the manifest specifies auth
 """
+
 
 DELTA_GENERATION_INSTRUCTION = """
 ## Modification Mode
@@ -205,6 +271,109 @@ def _get_template_injection(description: str, template_files: dict) -> str:
     if not injections:
         return ""
     return "\n\n".join(injections) + "\n"
+
+
+# =============================================================================
+# Dependency Resolution
+# =============================================================================
+
+# Common frontend packages with pinned versions
+_KNOWN_PACKAGE_VERSIONS: dict[str, str] = {
+    "recharts": "^2.15.0",
+    "@tanstack/react-query": "^5.62.0",
+    "@tanstack/react-table": "^8.21.0",
+    "axios": "^1.7.9",
+    "date-fns": "^4.1.0",
+    "dayjs": "^1.11.13",
+    "framer-motion": "^11.15.0",
+    "@dnd-kit/core": "^6.3.1",
+    "@dnd-kit/sortable": "^10.0.0",
+    "react-icons": "^5.4.0",
+    "embla-carousel-react": "^8.5.1",
+    "cmdk": "^1.0.4",
+    "vaul": "^1.1.2",
+    "input-otp": "^1.4.1",
+    "react-day-picker": "^9.4.4",
+    "react-resizable-panels": "^2.1.7",
+    "@hello-pangea/dnd": "^17.0.0",
+    "chart.js": "^4.4.7",
+    "react-chartjs-2": "^5.2.0",
+    "mapbox-gl": "^3.9.3",
+    "react-map-gl": "^7.1.8",
+    # @stripe/* intentionally omitted — payment pages use simple forms, no SDK
+    "react-pdf": "^9.2.1",
+    "react-markdown": "^9.0.3",
+    "react-syntax-highlighter": "^15.6.1",
+    "zustand": "^5.0.3",
+    "jotai": "^2.12.2",
+    "swr": "^2.3.0",
+    "@auth/core": "^0.37.4",
+    "next-auth": "^5.0.0-beta.25",
+    "lodash": "^4.17.21",
+    "@types/lodash": "^4.17.14",
+    "uuid": "^11.0.5",
+    "@types/uuid": "^10.0.0",
+    "sharp": "^0.33.5",
+    "ai": "^4.1.0",
+    "@ai-sdk/openai": "^1.1.0",
+    "uploadthing": "^7.4.4",
+    "@uploadthing/react": "^7.1.5",
+    "resend": "^4.1.2",
+    "@react-email/components": "^0.0.31",
+    "socket.io-client": "^4.8.1",
+    "pusher-js": "^8.4.0-rc2",
+}
+
+
+def _resolve_dependencies(
+    plan: list[dict],
+    template_package_json: str,
+) -> tuple[dict[str, str], str | None]:
+    """
+    Collect dependencies from plan tasks, deduplicate against template,
+    and return (new_deps_dict, updated_package_json_content | None).
+
+    Returns None for package_json if no new dependencies are needed.
+    """
+    import json as _json
+
+    # Collect all requested deps from plan tasks
+    requested: set[str] = set()
+    for task in plan:
+        deps = task.get("dependencies", [])
+        if isinstance(deps, list):
+            requested.update(d.strip() for d in deps if d.strip())
+
+    if not requested:
+        return {}, None
+
+    # Parse existing package.json
+    try:
+        pkg = _json.loads(template_package_json)
+    except Exception:
+        pkg = {"dependencies": {}, "devDependencies": {}}
+
+    existing_deps = set(pkg.get("dependencies", {}).keys())
+    existing_dev = set(pkg.get("devDependencies", {}).keys())
+    all_existing = existing_deps | existing_dev
+
+    # Filter out already-installed packages
+    new_deps = {
+        dep: _KNOWN_PACKAGE_VERSIONS.get(dep, "latest")
+        for dep in requested
+        if dep not in all_existing
+    }
+
+    if not new_deps:
+        return {}, None
+
+    # Update package.json
+    if "dependencies" not in pkg:
+        pkg["dependencies"] = {}
+    pkg["dependencies"].update(new_deps)
+
+    updated_json = _json.dumps(pkg, indent=4)
+    return new_deps, updated_json
 
 
 # =============================================================================
@@ -1088,7 +1257,8 @@ def get_generation_llm(
     # Check for Azure OpenAI configuration
     azure_endpoint = os.getenv("AZURE_OPENAI_ENDPOINT")
     azure_key = os.getenv("AZURE_OPENAI_API_KEY")
-    azure_deployment = os.getenv("AZURE_OPENAI_DEPLOYMENT_NAME", "gpt-5.2-chat")
+    azure_deployment = os.getenv(
+        "AZURE_OPENAI_DEPLOYMENT_NAME", "gpt-5.2-chat")
     azure_version = os.getenv("AZURE_OPENAI_API_VERSION", "2024-05-01-preview")
 
     # GPT-5.2 only supports temperature=1 (default)
@@ -1464,8 +1634,8 @@ async def generation_node(
         build_logs.append("Warning: No tasks in implementation plan")
         return {"file_system": file_system, "build_logs": build_logs, "files_streamed": files_streamed}
 
-    # Validate and correct plan operations (protected files, misclassified ops)
-    from agent.file_ops import validate_plan_operations, PROTECTED_FILES
+    # Validate and correct plan operations (misclassified ops)
+    from agent.file_ops import validate_plan_operations
     plan, op_warnings = validate_plan_operations(plan, file_system)
     for w in op_warnings:
         build_logs.append(f"Plan correction: {w}")
@@ -1480,6 +1650,25 @@ async def generation_node(
             build_logs.append(f"Plan validator: {w}")
     except Exception as _pve:
         logger.warning(f"generation_node: Plan pre-validation skipped: {_pve}")
+
+    # Resolve dependencies from plan tasks and update package.json
+    resolved_deps: Dict[str, str] = {}
+    try:
+        template_pkg = state.get("template_files", {}).get("package.json", "")
+        if not template_pkg:
+            # Try from file_system
+            template_pkg = file_system.get("package.json", "{}")
+        resolved_deps, updated_pkg_json = _resolve_dependencies(
+            plan, template_pkg)
+        if resolved_deps and updated_pkg_json:
+            file_system["package.json"] = updated_pkg_json
+            build_logs.append(
+                f"Dependencies added: {', '.join(resolved_deps.keys())}")
+            logger.info(
+                f"generation_node: Resolved {len(resolved_deps)} new dependencies: {list(resolved_deps.keys())}")
+    except Exception as _dep_err:
+        logger.warning(
+            f"generation_node: Dependency resolution failed: {_dep_err}")
 
     # Get LLM
     llm = get_generation_llm()
@@ -1605,11 +1794,6 @@ async def generation_node(
             task_logs.append(f"Skipped task {task_id}: no file path")
             return file_path, None, task_logs, 0
 
-        if file_path in PROTECTED_FILES:
-            task_logs.append(
-                f"BLOCKED: Cannot modify protected file {file_path}")
-            return file_path, None, task_logs, 0
-
         if file_path in template_paths and task_type == "create":
             task_logs.append(f"Skipped: {file_path} (from template)")
             return file_path, None, task_logs, 0
@@ -1626,11 +1810,21 @@ async def generation_node(
             existing_content = file_system[file_path]
             sys_prompt += DELTA_GENERATION_INSTRUCTION
 
+        # Inject short template manifest for builder awareness
+        _builder_manifest = ""
+        try:
+            from agent.template_manifest import get_short_manifest_for_builder
+            _builder_manifest = get_short_manifest_for_builder()
+        except Exception:
+            pass
+
         user_content = f"""## Task
 {description}
 
 ## File Path
 {file_path}
+
+{_builder_manifest}
 
 ## Backend API Manifest
 ```json
@@ -1861,6 +2055,7 @@ Props for imported components should match the signatures described in the Avail
         "file_system": file_system,
         "build_logs": build_logs,
         "files_streamed": files_streamed,
+        "resolved_dependencies": resolved_deps,
     }
 
 

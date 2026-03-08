@@ -79,16 +79,20 @@ ARCHITECT_PROMPT = """You are a frontend engineer planning Next.js 15 implementa
 
 Return a JSON array with tasks like:
 [
-  {"id": "task-1", "type": "create", "file_path": "app/page.tsx", "description": "Page description", "priority": 1}
+  {"id": "task-1", "type": "create|modify", "file_path": "app/dashboard/page.tsx", "description": "Page description", "priority": 1, "dependencies": ["recharts"]}
 ]
 
-Use app/ directory. Use TypeScript. Import existing components (Sidebar, Header, DataTable, etc).
+Use app/ directory. Use TypeScript. Import existing template components when suitable.
 Use Shadcn components, sonner for toasts, Server Actions in lib/actions.ts.
-
-PROTECTED FILES — never include these in your plan, they already exist and must not be modified:
-- app/page.tsx
-- app/layout.tsx
-- app/globals.css
+You may modify any file including layout.tsx, package.json, etc. when needed.
+For each task, list any npm packages needed beyond what the template already provides.
+Base template does NOT include: recharts, framer-motion,
+  @tanstack/react-query, axios, zustand, mapbox-gl, react-pdf, react-markdown, socket.io-client, pusher-js.
+Always list these in "dependencies" when any task file imports them.
+PAYMENT GUARDRAIL: NEVER add @stripe/stripe-js, @stripe/react-stripe-js, or any other
+  external payment SDK to "dependencies". Payment pages must use simple HTML forms only.
+ORM GUARDRAIL: NEVER add @prisma/client, prisma, drizzle-orm, typeorm, sequelize, or mongoose
+  to "dependencies". Data must be defined as exported const arrays in lib/data.ts — no DB, no ORM.
 """
 
 DELTA_PLANNING_INSTRUCTION = """
@@ -206,7 +210,8 @@ def get_planning_llm(
     # Check for Azure OpenAI configuration
     azure_endpoint = os.getenv("AZURE_OPENAI_ENDPOINT")
     azure_key = os.getenv("AZURE_OPENAI_API_KEY")
-    azure_deployment = os.getenv("AZURE_OPENAI_DEPLOYMENT_NAME", "gpt-5.2-chat")
+    azure_deployment = os.getenv(
+        "AZURE_OPENAI_DEPLOYMENT_NAME", "gpt-5.2-chat")
     azure_version = os.getenv("AZURE_OPENAI_API_VERSION", "2024-05-01-preview")
 
     # GPT-5.2 only supports temperature=1 (default)
@@ -389,6 +394,13 @@ async def plan_node(
 ## MCP References
 {mcp_lines}
 """
+
+    # --- Template Manifest (always injected for full template knowledge) ---
+    try:
+        from agent.template_manifest import get_manifest_for_prompt
+        user_content += "\n" + get_manifest_for_prompt() + "\n"
+    except Exception as e:
+        logger.warning(f"plan_node: Template manifest injection failed: {e}")
 
     # --- RAG Template Retrieval ---
     retrieval_metadata: Dict[str, Any] = {}
@@ -688,7 +700,7 @@ def should_proceed_after_review(state: AgentState) -> Literal["persistence", "ge
 
 def create_antigravity_graph(
     checkpointer: Optional[Any] = None,
-    enable_reflexion: bool = True,
+    enable_reflexion: bool = False,
     skip_approval: bool = False,
 ) -> Any:
     """
@@ -708,7 +720,7 @@ def create_antigravity_graph(
     Args:
         checkpointer: Optional checkpointer (e.g., AsyncRedisSaver) for persistence.
             Required for interrupt/resume to work across sessions.
-        enable_reflexion: Whether to include the reflexion loop. Defaults to True.
+        enable_reflexion: Whether to include the reflexion loop. Defaults to False.
         skip_approval: Whether to skip the HITL approval step. Defaults to False.
             Set to True when running without checkpointer.
 
@@ -821,7 +833,7 @@ def create_antigravity_graph(
 
 def create_modification_graph(
     checkpointer: Optional[Any] = None,
-    enable_reflexion: bool = True,
+    enable_reflexion: bool = False,
 ) -> Any:
     """
     Create a lightweight graph for code modifications without regenerating everything.
@@ -835,7 +847,7 @@ def create_modification_graph(
 
     Args:
         checkpointer: Optional checkpointer for persistence.
-        enable_reflexion: Whether to include error recovery loop. Defaults to True.
+        enable_reflexion: Whether to include error recovery loop. Defaults to False.
 
     Returns:
         Compiled modification graph.

@@ -35,8 +35,6 @@ _PREBUILT_COMPONENT_HINTS: dict[str, str] = {
     "create page container": "components/layout/PageContainer.tsx",
 }
 
-# Files the agent must never target
-from agent.file_ops import PROTECTED_FILES
 
 
 def validate_plan(
@@ -48,11 +46,10 @@ def validate_plan(
     Run rule-based checks on the plan before any LLM generation.
 
     Rules applied (in order):
-    1. Reserved file guard — remove tasks targeting PROTECTED_FILES
-    2. Duplicate file guard — merge duplicate file_path tasks into one
-    3. Template component guard — rewrite tasks that try to create pre-built components
-    4. Path convention check — warn if page files use wrong flat path
-    5. Missing loading.tsx — auto-add loading.tsx for async page tasks without one
+    1. Duplicate file guard — merge duplicate file_path tasks into one
+    2. Template component suggestion — suggest pre-built components when relevant
+    3. Path convention check — warn if page files use wrong flat path
+    4. Missing loading.tsx — auto-add loading.tsx for async page tasks without one
 
     Args:
         plan: List of task dicts from the architect.
@@ -65,17 +62,7 @@ def validate_plan(
     warnings: List[str] = []
     corrected: List[dict] = list(plan)
 
-    # ── Rule 1: Reserved file guard ───────────────────────────────────────────
-    before = len(corrected)
-    corrected = [t for t in corrected if t.get("file_path") not in PROTECTED_FILES]
-    removed = before - len(corrected)
-    if removed:
-        warnings.append(
-            f"Removed {removed} task(s) targeting PROTECTED_FILES "
-            f"(app/layout.tsx, app/page.tsx, tailwind.config.js, etc.)"
-        )
-
-    # ── Rule 2: Duplicate file guard ──────────────────────────────────────────
+    # ── Rule 1: Duplicate file guard ──────────────────────────────────────────
     seen: dict[str, int] = {}  # file_path → first occurrence index
     merged_indices: set[int] = set()
     for i, task in enumerate(corrected):
@@ -97,26 +84,25 @@ def validate_plan(
             seen[fp] = i
     corrected = [t for i, t in enumerate(corrected) if i not in merged_indices]
 
-    # ── Rule 3: Template component guard ─────────────────────────────────────
+    # ── Rule 2: Template component suggestion ────────────────────────────────
     for task in corrected:
         desc_lower = task.get("description", "").lower()
         for hint, pre_built_path in _PREBUILT_COMPONENT_HINTS.items():
             if hint in desc_lower and pre_built_path in template_files:
                 component_name = pre_built_path.split("/")[-1].replace(".tsx", "")
-                old_desc = task["description"]
-                task["description"] = (
-                    f"Import and USE the pre-built {component_name} from "
-                    f"'@/{pre_built_path.replace('.tsx', '')}' — do NOT recreate it. "
-                    f"Original task: {old_desc}"
+                import_path = pre_built_path.replace(".tsx", "")
+                task["description"] += (
+                    f"\nNOTE: A pre-built {component_name} is available at "
+                    f"'@/{import_path}'. Consider importing it instead of "
+                    f"creating a new one."
                 )
-                task["type"] = task.get("type", "create")
                 warnings.append(
-                    f"Rewrote task for '{task.get('file_path', '?')}': "
-                    f"use pre-built {component_name} instead of recreating."
+                    f"Suggested pre-built {component_name} for task "
+                    f"'{task.get('file_path', '?')}'."
                 )
                 break  # Only apply the first matching hint per task
 
-    # ── Rule 3b: Correct component import paths in task descriptions ─────────
+    # ── Rule 2b: Correct component import paths in task descriptions ─────────
     # Prevents the LLM from generating '@/components/Header' when the correct
     # path is '@/components/layout/Header' (template components live in subdirs).
     _FLAT_IMPORT_FIXES = {
@@ -143,7 +129,7 @@ def validate_plan(
                 )
         task["description"] = desc
 
-    # ── Rule 4: Path convention check ────────────────────────────────────────
+    # ── Rule 3: Path convention check ────────────────────────────────────────
     for task in corrected:
         fp = task.get("file_path", "")
         # page.tsx files must be inside a subdirectory: app/*/page.tsx not app/name.tsx
@@ -157,7 +143,7 @@ def validate_plan(
                 )
                 task["file_path"] = suggested
 
-    # ── Rule 5: Missing loading.tsx for async pages ───────────────────────────
+    # ── Rule 4: Missing loading.tsx for async pages ───────────────────────────
     page_paths = {
         t["file_path"]
         for t in corrected
@@ -190,7 +176,7 @@ def validate_plan(
                 f"Auto-added loading.tsx task for async route '{route_dir}'."
             )
 
-    # ── Rule 6: Route group path conflict detection ───────────────────────────
+    # ── Rule 5: Route group path conflict detection ───────────────────────────
     # Next.js strips (group)/ from URLs, so app/(admin)/orders/page.tsx and
     # app/(shop)/orders/page.tsx both resolve to /orders — a fatal build error.
     # Fix: insert the group name as a real path segment for conflicting files.
@@ -218,6 +204,21 @@ def validate_plan(
                 f"Renamed to '{fixed}'."
             )
             corrected[i]["file_path"] = fixed
+
+    # ── Rule 6: Dependency deduplication ────────────────────────────────────
+    all_deps: set[str] = set()
+    for task in corrected:
+        deps = task.get("dependencies", [])
+        if isinstance(deps, list):
+            unique = [d for d in deps if d not in all_deps]
+            dupes = [d for d in deps if d in all_deps]
+            if dupes:
+                warnings.append(
+                    f"Deduplicated dependencies in task '{task.get('id', '?')}': "
+                    f"{', '.join(dupes)}"
+                )
+            all_deps.update(deps)
+            task["dependencies"] = unique
 
     logger.info(
         f"plan_validator: {len(warnings)} correction(s) applied. "

@@ -159,17 +159,14 @@ async def main():
             print(f"  {log}")
         
         print("\n" + "=" * 60)
-        print("STEP 3: Build Status (if reflexion enabled)")
+        print("STEP 3: Build Fixing")
         print("=" * 60)
         
-        # If reflexion is enabled, the agent is now waiting at trigger_build_node
-        # You can simulate a build result with:
-        # curl -X POST http://localhost:8000/callbacks/build-status/test-session-001 \
-        #   -H "Content-Type: application/json" \
-        #   -d '{"status": "success", "logs": ["Build completed successfully"]}'
-        
-        print("Agent is waiting for build status webhook at:")
-        print(f"  POST http://localhost:8000/callbacks/build-status/{thread_id}")
+        print("Default platform flow does not pause for build-status webhooks.")
+        print("Build errors are auto-fixed via:")
+        print("  POST /api/v1/generate/{job_id}/build-error")
+        print("Legacy interrupt callback (manual/compat only):")
+        print(f"  POST /callbacks/build-status/{thread_id}")
         
     except Exception as e:
         print(f"❌ Error: {e}")
@@ -188,28 +185,27 @@ python test_full_workflow.py
 
 ---
 
-## 4. Simulate Build Results
+## 4. Build Error Auto-Fix (Default Platform Flow)
 
-### Success (completes workflow):
-```bash
-curl -X POST http://localhost:8000/callbacks/build-status/test-session-001 \
-  -H "Content-Type: application/json" \
-  -d '{"status": "success", "logs": ["Build completed in 3.2s"]}'
-```
+When the frontend WebContainer build fails, send errors to:
+`POST /api/v1/generate/{job_id}/build-error`
 
-### Failure (triggers reflexion):
 ```bash
-curl -X POST http://localhost:8000/callbacks/build-status/test-session-001 \
+curl -X POST http://localhost:8000/api/v1/generate/test-session-001/build-error \
   -H "Content-Type: application/json" \
   -d '{
-    "status": "failed",
-    "logs": [
-      "Error: Module not found: @/components/ui/button",
+    "phase": "dev",
+    "errors": [
+      "Module not found: Cannot resolve @/components/ui/button",
       "at app/page.tsx:5:0"
     ],
-    "error_message": "Shadcn Button component missing"
+    "fullOutput": "npm run dev failed...",
+    "retries_used": 0
   }'
 ```
+
+Legacy/manual interrupt flow still supports:
+`POST /callbacks/build-status/{thread_id}`
 
 ---
 
@@ -288,7 +284,7 @@ asyncio.run(check_state())
 
 ---
 
-## 7. Expected Flow
+## 7. Expected Flow (Platform Runtime)
 
 ```
 1. run_antigravity_agent()
@@ -298,12 +294,16 @@ asyncio.run(check_state())
 2. resume_antigravity_agent(action="APPROVE")
    └── generation_node (generates code files)
    └── persistence_node (uploads to Azure Blob)
-   └── trigger_build_node (PAUSES - waiting for webhook)
+   └── END (no interrupt-based build pause in default runtime)
 
-3. POST /callbacks/build-status/{thread_id}
-   └── If success → END
-   └── If failed → reflexion_node → generation_node (retry loop)
-   └── If max retries → escalation_node (PAUSES - human help)
+3. Frontend build fails
+   └── POST /api/v1/generate/{job_id}/build-error
+   └── run_build_fix_task auto-fixes and re-persists files
+   └── publish file_generated + reflexion_progress events
+
+4. Legacy/manual compatibility path only
+   └── POST /callbacks/build-status/{thread_id}
+   └── resumes interrupt-based trigger_build_node flow
 ```
 
 ---
@@ -316,7 +316,8 @@ asyncio.run(check_state())
 | `Redis connection failed` | Verify Upstash credentials |
 | `Graph not resuming` | Ensure same `thread_id` used |
 | `No files generated` | Check `implementation_plan` is not empty |
-| `Build never completes` | Send webhook to `/callbacks/build-status/{thread_id}` |
+| `Build auto-fix not triggering` | Verify frontend sends errors to `/api/v1/generate/{job_id}/build-error` |
+| `Legacy interrupt run stuck` | Send webhook to `/callbacks/build-status/{thread_id}` |
 
 ---
 

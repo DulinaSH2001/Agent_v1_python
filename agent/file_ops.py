@@ -4,12 +4,10 @@ Antigravity Agent - File Operation Classification & Validation
 Provides deterministic file operation handling:
 - classify_file_operation: Validates and potentially reclassifies operations
 - validate_plan_operations: Validates all operations in a plan
-- PROTECTED_FILES: Files that must never be modified by the agent
 
 Rules:
 - "modify" on non-existent file -> reclassify to "create" with warning
 - "create" on existing file -> reclassify to "modify" with warning
-- Any operation on PROTECTED_FILES -> reject with error
 - "delete" on non-existent file -> skip with warning
 """
 
@@ -21,39 +19,8 @@ from typing import Any, Dict, List, Tuple
 logger = logging.getLogger(__name__)
 
 
-PROTECTED_FILES = frozenset({
-    # Root config — never regenerate
-    "app/layout.tsx",
-    "app/page.tsx",
-    "app/loading.tsx",
-    "app/error.tsx",
-    "styles/globals.css",
-    "tailwind.config.js",
-    "next.config.js",
-    "tsconfig.json",
-    "package.json",
-    # Pre-built layout components — reuse, never overwrite
-    "components/layout/Sidebar.tsx",
-    "components/layout/Header.tsx",
-    "components/layout/PageContainer.tsx",
-    # Pre-built data components — reuse, never overwrite
-    "components/data/DataTable.tsx",
-    "components/data/StatCard.tsx",
-    "components/data/EmptyState.tsx",
-    # Shadow paths — flat or kebab-case variants the LLM creates instead of
-    # using the template components above. Block creation so the pre-built
-    # components are the only option.
-    "components/DataTable.tsx",
-    "components/data-table.tsx",
-    "components/StatCard.tsx",
-    "components/stat-card.tsx",
-    "components/EmptyState.tsx",
-    "components/empty-state.tsx",
-    "components/Header.tsx",
-    "components/Sidebar.tsx",
-    "components/PageContainer.tsx",
-    "components/page-container.tsx",
-})
+# No file protection — agent decides what to modify
+PROTECTED_FILES = frozenset()
 
 
 def classify_file_operation(
@@ -78,14 +45,6 @@ def classify_file_operation(
     task_type = task.get("type", "create")
 
     if not file_path:
-        return task, warnings
-
-    # Check protected files
-    if file_path in PROTECTED_FILES:
-        warnings.append(
-            f"BLOCKED: '{file_path}' is a protected file and cannot be {task_type}d"
-        )
-        task["_blocked"] = True
         return task, warnings
 
     file_exists = file_path in file_system

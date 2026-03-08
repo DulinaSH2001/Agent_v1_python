@@ -405,7 +405,7 @@ async def resume_agent_with_build_status(
     logs: List[str],
 ) -> bool:
     """
-    Resume a paused agent with build status.
+    Resume a paused agent with build status (legacy interrupt flow).
 
     Args:
         thread_id: The thread ID of the paused agent.
@@ -468,6 +468,69 @@ async def health_check():
 # In-memory job storage (use Redis in production for persistence across restarts)
 _active_jobs: Dict[str, Dict[str, Any]] = {}
 
+# -------------------------------------------------------------------------
+# Forbidden-SDK guardrail — strip payment SDKs and ORM imports from every
+# generated file before it reaches the WebContainer / storage.
+# -------------------------------------------------------------------------
+_FORBIDDEN_SDK_PATTERNS = [
+    # Payment SDKs — never allowed in generated code
+    "@stripe/stripe-js",
+    "@stripe/react-stripe-js",
+    "loadStripe",
+    "useStripe",
+    "useElements",
+    "PaymentElement",
+    "CardElement",
+    "@paypal/react-paypal-js",
+    "braintree",
+    # ORM / database clients — never allowed in generated code
+    "@prisma/client",
+    "prisma",
+    "drizzle-orm",
+    "typeorm",
+    "sequelize",
+    "mongoose",
+]
+
+
+def _scrub_payment_sdk(file_system: Dict[str, str]) -> Dict[str, str]:
+    """Remove forbidden SDK imports and package.json entries from generated files."""
+    import re
+    import json as _json
+    scrubbed: Dict[str, str] = {}
+    for path, content in file_system.items():
+        if not isinstance(content, str):
+            scrubbed[path] = content
+            continue
+        # --- Clean package.json: remove forbidden entries + fix dev script ---
+        if path.endswith("package.json"):
+            try:
+                pkg = _json.loads(content)
+                for section in ("dependencies", "devDependencies"):
+                    if section in pkg:
+                        pkg[section] = {
+                            k: v for k, v in pkg[section].items()
+                            if k not in _FORBIDDEN_SDK_PATTERNS
+                        }
+                # Remove --turbo flag: not supported in all environments
+                if "scripts" in pkg and "dev" in pkg["scripts"]:
+                    pkg["scripts"]["dev"] = pkg["scripts"]["dev"].replace(" --turbo", "").replace("--turbo ", "").strip()
+                scrubbed[path] = _json.dumps(pkg, indent=4)
+            except Exception:
+                scrubbed[path] = content
+            continue
+        # --- Clean source files: remove forbidden import lines ---
+        cleaned = content
+        for pkg in _FORBIDDEN_SDK_PATTERNS:
+            cleaned = re.sub(
+                rf"^.*import[^;]*['\"]({re.escape(pkg)})['\"][^;]*;?\s*\n?",
+                "",
+                cleaned,
+                flags=re.MULTILINE,
+            )
+        scrubbed[path] = cleaned
+    return scrubbed
+
 
 async def run_generation_task(
     job_id: str,
@@ -483,6 +546,7 @@ async def run_generation_task(
     api_base_url: Optional[str] = None,
 ):
     """Background task to run the agent and publish status updates."""
+
     try:
         # Import here to avoid circular imports
         from agent.graph_logic import create_antigravity_graph, run_antigravity_agent
@@ -504,15 +568,21 @@ async def run_generation_task(
         # Use the global singletons set during lifespan startup
         checkpointer = _redis_checkpointer if _redis_checkpointer is not None else _memory_checkpointer
         skip_approval = False
+        # Default runtime flow uses /build-error side-channel auto-fix, not graph interrupts.
+        enable_reflexion = False
         logger.info(f"Using checkpointer: {type(checkpointer).__name__}")
 
         # Cache compiled graphs — prevents recompiling the LangGraph graph on every request
-        graph_key = f"{type(checkpointer).__name__}_noreflex_hitl"
+        graph_key = (
+            f"{type(checkpointer).__name__}"
+            f"_approval={'on' if not skip_approval else 'off'}"
+            f"_reflexion={'on' if enable_reflexion else 'off'}"
+        )
         if graph_key not in _compiled_graphs:
             logger.info(f"Compiling LangGraph graph (key={graph_key})...")
             _compiled_graphs[graph_key] = create_antigravity_graph(
                 checkpointer=checkpointer,
-                enable_reflexion=False,
+                enable_reflexion=enable_reflexion,
                 skip_approval=skip_approval,
             )
         graph = _compiled_graphs[graph_key]
@@ -583,7 +653,7 @@ async def run_generation_task(
             )
 
         # Get generated files
-        file_system = result.get("file_system", {})
+        file_system = _scrub_payment_sdk(result.get("file_system", {}))
 
         # Update job storage
         _active_jobs[job_id]["file_system"] = file_system
@@ -997,6 +1067,7 @@ async def _resume_approval_process(job_id: str, action: str, feedback: Optional[
         # 2. Rebuild graph
         graph = create_antigravity_graph(
             checkpointer=checkpointer,
+            # Keep runtime consistent with run_generation_task (no interrupt-based build loop).
             enable_reflexion=False,
             skip_approval=False  # Must be False for HITL
         )
@@ -1028,7 +1099,7 @@ async def _resume_approval_process(job_id: str, action: str, feedback: Optional[
 
         elif action == "APPROVE":
             # If approved, files generated
-            file_system = result.get("file_system", {})
+            file_system = _scrub_payment_sdk(result.get("file_system", {}))
             _active_jobs[job_id]["file_system"] = file_system
             _active_jobs[job_id]["status"] = "completed"
             _active_jobs[job_id]["files_generated"] = len(file_system)
@@ -1049,7 +1120,7 @@ async def _resume_approval_process(job_id: str, action: str, feedback: Optional[
 
 
 # =============================================================================
-# Build Status Callback Routes
+# Legacy Build Status Callback Routes
 # =============================================================================
 
 
@@ -1064,10 +1135,11 @@ async def receive_build_status(
     x_webhook_signature: Optional[str] = Header(default=None),
 ):
     """
-    Receive build status from external container.
+    Receive build status from external container (legacy callback path).
 
-    This endpoint is called by the build container after completing
-    a build. It resumes the paused agent with the build result.
+    This supports older interrupt-based reflexion runs where the graph paused
+    at trigger_build_node. The default runtime flow now uses
+    /api/v1/generate/{job_id}/build-error side-channel auto-fix.
 
     Args:
         thread_id: The agent thread ID.
@@ -1123,10 +1195,9 @@ async def receive_human_response(
     request: Request,
 ):
     """
-    Receive human response for escalated issues.
+    Receive human response for escalated issues (legacy interrupt flow).
 
-    This endpoint is called when a human provides guidance for
-    an escalated build issue.
+    This endpoint is used when an interrupt-based reflexion run escalates.
 
     Args:
         thread_id: The agent thread ID.
@@ -1172,6 +1243,307 @@ async def receive_human_response(
             status_code=500,
             detail=f"Failed to process human response: {str(e)}",
         )
+
+
+# =============================================================================
+# Build Error Auto-Fix (Reflexion Side-Channel)
+# =============================================================================
+
+# Per-job locks to prevent overlapping fix attempts
+_build_fix_locks: Dict[str, asyncio.Lock] = {}
+
+# Per-job reflexion iteration counters
+_build_fix_iterations: Dict[str, int] = {}
+
+MAX_BUILD_FIX_ITERATIONS = 5
+
+
+class BuildErrorRequest(BaseModel):
+    """Request body for build error auto-fix endpoint."""
+    phase: str = Field(
+        description="Build phase that failed: preflight, install, or dev")
+    errors: List[str] = Field(
+        default=[], description="Error messages from WebContainer")
+    structured_errors: List[Dict[str, Any]] = Field(
+        default=[], description="Structured error objects")
+    fullOutput: Optional[str] = Field(
+        default=None, description="Full build output log")
+    orgSlug: Optional[str] = None
+    projectSlug: Optional[str] = None
+    retries_used: int = Field(
+        default=0, description="Number of retries already attempted by WebContainer")
+
+
+async def run_build_fix_task(
+    job_id: str,
+    errors: List[str],
+    phase: str,
+    full_output: Optional[str],
+):
+    """Background task: analyze build errors, generate fixes, re-persist."""
+    from agent.reflexion import (
+        categorize_errors,
+        build_categorized_prompt,
+        DEBUGGER_PROMPT,
+        MAX_REFLEXION_ITERATIONS,
+    )
+
+    # Get or create per-job lock
+    if job_id not in _build_fix_locks:
+        _build_fix_locks[job_id] = asyncio.Lock()
+
+    async with _build_fix_locks[job_id]:
+        iteration = _build_fix_iterations.get(job_id, 0)
+
+        if iteration >= MAX_BUILD_FIX_ITERATIONS:
+            logger.warning(
+                f"build_fix: Max iterations reached for job {job_id}")
+            await publish_to_ably(
+                job_id, "reflexion_escalate",
+                f"Auto-fix reached max attempts ({MAX_BUILD_FIX_ITERATIONS}). Manual intervention needed.",
+            )
+            return
+
+        job = _active_jobs.get(job_id)
+        if not job:
+            logger.warning(f"build_fix: Job {job_id} not found in active jobs")
+            return
+
+        file_system = job.get("file_system", {})
+        if not file_system:
+            logger.warning(f"build_fix: No file_system for job {job_id}")
+            return
+
+        logger.info(
+            f"build_fix: Starting iteration {iteration + 1} for job {job_id} (phase={phase}, errors={len(errors)})")
+
+        # Notify frontend
+        await publish_to_ably(
+            job_id, "reflexion_progress",
+            f"Auto-fixing build errors (attempt {iteration + 1}/{MAX_BUILD_FIX_ITERATIONS})...",
+            iteration=iteration + 1,
+            max_iterations=MAX_BUILD_FIX_ITERATIONS,
+            phase=phase,
+        )
+
+        try:
+            # Categorize errors
+            all_error_lines = list(errors)
+            if full_output:
+                all_error_lines.extend(full_output.strip().split("\n")[-30:])
+            categories = categorize_errors(all_error_lines)
+
+            # Build the error prompt
+            error_text = "\n".join(all_error_lines[-20:])
+            existing_files_list = "\n".join(
+                f"- {fp}" for fp in sorted(file_system.keys()))
+            user_prompt = build_categorized_prompt(
+                error_text=error_text,
+                categories=categories,
+                iteration=iteration,
+                existing_files=existing_files_list,
+            )
+
+            # Call LLM to generate fix plan
+            from langchain_openai import ChatOpenAI
+            from langchain_core.messages import SystemMessage, HumanMessage
+            import json
+
+            llm = ChatOpenAI(
+                model=os.getenv("AZURE_OPENAI_DEPLOYMENT", "gpt-4o"),
+                api_key=os.getenv("AZURE_OPENAI_API_KEY"),
+                azure_endpoint=os.getenv("AZURE_OPENAI_ENDPOINT"),
+                api_version=os.getenv(
+                    "AZURE_OPENAI_API_VERSION", "2024-12-01-preview"),
+                temperature=0.2,
+                max_tokens=4096,
+            )
+
+            messages = [
+                SystemMessage(content=DEBUGGER_PROMPT),
+                HumanMessage(content=user_prompt),
+            ]
+
+            response = await llm.ainvoke(messages)
+            response_text = response.content.strip()
+
+            # Parse fix tasks
+            if response_text.startswith("```"):
+                response_text = response_text.split("```")[1]
+                if response_text.startswith("json"):
+                    response_text = response_text[4:]
+
+            fix_tasks = json.loads(response_text)
+            if not isinstance(fix_tasks, list):
+                fix_tasks = [fix_tasks]
+
+            logger.info(
+                f"build_fix: LLM generated {len(fix_tasks)} fix tasks for job {job_id}")
+
+            # Generate fixed code for each task
+            fixed_files: Dict[str, str] = {}
+            for task in fix_tasks:
+                file_path = task.get("file_path", "")
+                description = task.get("description", "")
+                task_type = task.get("type", "modify")
+
+                if not file_path or not description:
+                    continue
+
+                # Build a simple generation prompt
+                existing_content = file_system.get(file_path, "")
+
+                fix_prompt = f"""## Fix Task
+{description}
+
+## File Path
+{file_path}
+"""
+                if existing_content:
+                    fix_prompt += f"""
+## Current File Content
+```typescript
+{existing_content}
+```
+
+Return the COMPLETE fixed file. Preserve all working code. Only fix the error described above.
+"""
+                else:
+                    fix_prompt += "\nReturn ONLY the code for this new file. No markdown.\n"
+
+                fix_messages = [
+                    SystemMessage(
+                        content="Generate Next.js 15 TypeScript code. Return ONLY code, no markdown."),
+                    HumanMessage(content=fix_prompt),
+                ]
+
+                fix_response = await llm.ainvoke(fix_messages)
+                fix_code = fix_response.content.strip()
+
+                # Strip markdown fences
+                if fix_code.startswith("```"):
+                    lines = fix_code.split("\n")
+                    lines = lines[1:]  # remove opening fence
+                    if lines and lines[-1].strip() == "```":
+                        lines = lines[:-1]
+                    fix_code = "\n".join(lines)
+
+                if fix_code:
+                    fixed_files[file_path] = fix_code
+                    file_system[file_path] = fix_code
+
+            if not fixed_files:
+                logger.warning(f"build_fix: No files fixed for job {job_id}")
+                await publish_to_ably(
+                    job_id, "reflexion_progress",
+                    "Auto-fix could not determine fixes. Manual review may be needed.",
+                )
+                return
+
+            # Update job storage
+            _active_jobs[job_id]["file_system"] = file_system
+
+            logger.info(
+                f"build_fix: Fixed {len(fixed_files)} files for job {job_id}: {list(fixed_files.keys())}")
+
+            # Publish fixed files as file_generated events (WebContainer will pick them up)
+            ably = get_ably_client()
+            if ably:
+                channel_name = f"{get_ably_channel_prefix()}:{job_id}"
+                channel = ably.channels.get(channel_name)
+                for fp, content in fixed_files.items():
+                    try:
+                        file_event = {
+                            "status": "file_generated",
+                            "file_path": fp,
+                            "content": content,
+                            "job_id": job_id,
+                            "is_fix": True,
+                        }
+                        try:
+                            await channel.publish("file_generated", file_event)
+                        except TypeError:
+                            channel.publish("file_generated", file_event)
+                    except Exception as pub_err:
+                        logger.warning(
+                            f"build_fix: Failed to publish fix for {fp}: {pub_err}")
+
+            # Re-send all files to backend
+            org_id = job.get("org_id")
+            project_id = job.get("project_id")
+            await send_files_to_backend(
+                job_id=job_id,
+                files=file_system,
+                org_id=org_id,
+                project_id=project_id,
+            )
+
+            # Notify frontend of fix completion
+            await publish_to_ably(
+                job_id, "reflexion_progress",
+                f"Fixed {len(fixed_files)} file(s): {', '.join(fixed_files.keys())}. Rebuilding...",
+                files_fixed=list(fixed_files.keys()),
+                iteration=iteration + 1,
+            )
+
+            _build_fix_iterations[job_id] = iteration + 1
+
+        except Exception as e:
+            logger.error(
+                f"build_fix: Error in auto-fix for job {job_id}: {e}", exc_info=True)
+            await publish_to_ably(
+                job_id, "reflexion_progress",
+                f"Auto-fix error: {str(e)[:200]}",
+            )
+
+
+@app.post("/api/v1/generate/{job_id}/build-error")
+async def handle_build_error(
+    job_id: str,
+    request: BuildErrorRequest,
+    background_tasks: BackgroundTasks,
+):
+    """
+    Receive WebContainer build errors and trigger auto-fix.
+
+    The backend forwards build errors from the frontend here.
+    This starts a background reflexion task that:
+    1. Categorizes errors
+    2. Generates fix tasks via LLM
+    3. Re-persists fixed files
+    4. Publishes file_generated events for WebContainer
+    """
+    job = _active_jobs.get(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail=f"Job {job_id} not found")
+
+    iteration = _build_fix_iterations.get(job_id, 0)
+    if iteration >= MAX_BUILD_FIX_ITERATIONS:
+        return {
+            "status": "escalated",
+            "message": f"Max auto-fix attempts ({MAX_BUILD_FIX_ITERATIONS}) reached",
+            "job_id": job_id,
+        }
+
+    logger.info(
+        f"Received build error for job {job_id}: phase={request.phase}, "
+        f"errors={len(request.errors)}, retries_used={request.retries_used}"
+    )
+
+    background_tasks.add_task(
+        run_build_fix_task,
+        job_id=job_id,
+        errors=request.errors,
+        phase=request.phase,
+        full_output=request.fullOutput,
+    )
+
+    return {
+        "status": "fixing",
+        "message": f"Auto-fix started (iteration {iteration + 1})",
+        "job_id": job_id,
+        "iteration": iteration + 1,
+    }
 
 
 # =============================================================================

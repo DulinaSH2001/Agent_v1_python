@@ -35,6 +35,13 @@
       "pitfall": "Do NOT create a new empty state view — EmptyState already exists in components/data/EmptyState.tsx",
       "fix": "import { EmptyState } from '@/components/data/EmptyState'  with title, description, icon, action props",
       "severity": "warning"
+    },
+    {
+      "id": "C006",
+      "trigger_keywords": ["dynamic route", "slug", "params", "[slug]", "[id]", "page.tsx", "layout.tsx"],
+      "pitfall": "Next.js 15: params in dynamic routes is a Promise — NEVER write `params: { slug: string }`",
+      "fix": "Always use: `params: Promise<{ slug: string }>` and `const { slug } = await params;` inside the async function body",
+      "severity": "error"
     }
   ]
 }

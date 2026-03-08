@@ -13,16 +13,17 @@ Usage:
     python scripts/build_rag_index.py --verbose              # debug logging
 """
 
+import sys
+from pathlib import Path
+
+# Add project root to path BEFORE importing agent modules
+sys.path.insert(0, str(Path(__file__).parent.parent))
+
 from agent.template_manager import get_template_manager
 from agent.template_rag import get_template_rag, _get_index_name
 from dotenv import load_dotenv
 import argparse
 import logging
-import sys
-from pathlib import Path
-
-# Add project root to path
-sys.path.insert(0, str(Path(__file__).parent.parent))
 
 load_dotenv()
 

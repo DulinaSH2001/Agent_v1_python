@@ -106,6 +106,8 @@ class AgentState(TypedDict):
     api_base_url: Optional[str]
     # RAG retrieval metadata for debugging and observability
     retrieval_metadata: Dict[str, Any]
+    # Resolved npm dependencies from plan tasks (package_name -> version)
+    resolved_dependencies: Dict[str, str]
 
 
 # =============================================================================
@@ -650,4 +652,5 @@ def get_initial_state(
         data_mode="real_api",
         api_base_url=None,
         retrieval_metadata={},
+        resolved_dependencies={},
     )
