@@ -120,6 +120,7 @@ async def template_upload_node(
             "components/layout/Footer.tsx",
             "components/layout/PageContainer.tsx",
             "components/data/EmptyState.tsx",
+            "public/",
             "template.json", "README.md",
         )
 
