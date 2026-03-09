@@ -88,7 +88,7 @@ async def template_upload_node(
     build_logs: list[str] = list(state.get("build_logs", []))
 
     # Get template files
-    template_files = state.get("template_files", {})
+    template_files = dict(state.get("template_files", {}))
     template_name = state.get("selected_template", "unknown")
 
     if not template_files:
@@ -96,7 +96,79 @@ async def template_upload_node(
         build_logs.append("Warning: No template selected")
         return {"build_logs": build_logs}
 
-    logger.info(f"Uploading {len(template_files)} template files")
+    # ── Filter template files by project type relevance ──────────────
+    # Prevents irrelevant components (e.g. DataTable for a portfolio)
+    # from reaching the LLM context and biasing generation.
+    try:
+        from agent.project_classifier import (
+            classify_project,
+            get_relevant_components,
+        )
+        user_query = state.get("user_prompt", "")
+        project_info = classify_project(user_query)
+        project_type = project_info["type"]
+        relevant = get_relevant_components(project_type)
+
+        # Always include these paths (config, styles, ui, utils, types)
+        _ALWAYS_INCLUDE = (
+            "package.json", "tailwind.config.js", "postcss.config.js",
+            "tsconfig.json", "next.config.js", "next-env.d.ts",
+            "styles/", "app/layout.tsx", "app/loading.tsx", "app/error.tsx",
+            "app/page.tsx", "lib/", "components/ui/",
+            "components/theme-provider.tsx", "types/",
+            "components/layout/Header.tsx",
+            "components/layout/Footer.tsx",
+            "components/layout/PageContainer.tsx",
+            "components/data/EmptyState.tsx",
+            "template.json", "README.md",
+        )
+
+        # Conditionally included based on project type
+        _CONDITIONAL = {
+            "components/layout/Sidebar.tsx": relevant.get("sidebar", True),
+            "components/data/DataTable.tsx": relevant.get("data_table", True),
+            "components/data/StatCard.tsx": relevant.get("stat_card", True),
+        }
+
+        original_count = len(template_files)
+        filtered = {}
+        for path, content in template_files.items():
+            # Check always-include prefixes
+            if any(
+                path == prefix or path.startswith(prefix)
+                for prefix in _ALWAYS_INCLUDE
+            ):
+                filtered[path] = content
+            # Check conditional files
+            elif path in _CONDITIONAL:
+                if _CONDITIONAL[path]:
+                    filtered[path] = content
+                else:
+                    logger.debug(
+                        "template_upload_node: Filtered out '%s' "
+                        "(not relevant for %s)", path, project_type,
+                    )
+            else:
+                # Include unknown files by default
+                filtered[path] = content
+
+        template_files = filtered
+        if len(filtered) < original_count:
+            removed = original_count - len(filtered)
+            logger.info(
+                "template_upload_node: Filtered %d irrelevant files "
+                "for project type '%s'", removed, project_type,
+            )
+            build_logs.append(
+                f"Filtered {removed} irrelevant template files "
+                f"for {project_type} project"
+            )
+    except Exception as e:
+        logger.warning(
+            "template_upload_node: Template filtering skipped: %s", e
+        )
+
+    logger.info("Uploading %d template files", len(template_files))
     build_logs.append(
         f"Phase 1: Uploading {template_name} template ({len(template_files)} files)")
 
@@ -240,10 +312,16 @@ async def template_upload_node(
                     f"failed (non-fatal): {stream_err}"
                 )
 
-        return {"build_logs": build_logs}
+        return {
+            "build_logs": build_logs,
+            "template_files": template_files,
+        }
 
     except Exception as e:
         error_msg = f"Template upload failed: {e}"
         logger.error(error_msg)
         build_logs.append(f"Error: {error_msg}")
-        return {"build_logs": build_logs}
+        return {
+            "build_logs": build_logs,
+            "template_files": template_files,
+        }

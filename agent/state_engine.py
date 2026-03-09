@@ -75,7 +75,7 @@ class AgentState(TypedDict):
             history, user preferences, and previously generated file lists.
     """
 
-    manifest: Dict[str, Any]
+    manifest: Union[Dict[str, Any], str]
     user_prompt: str
     file_system: Dict[str, str]
     implementation_plan: List[Dict[str, Any]]
@@ -104,6 +104,8 @@ class AgentState(TypedDict):
     data_mode: str
     # API base URL provided by the user when data_mode is "real_api" (e.g. "http://localhost:8080")
     api_base_url: Optional[str]
+    # User-selected color palette: {name, primary, secondary, accent, background, foreground} in hex
+    color_palette: Optional[Dict[str, Any]]
     # RAG retrieval metadata for debugging and observability
     retrieval_metadata: Dict[str, Any]
     # Resolved npm dependencies from plan tasks (package_name -> version)
@@ -651,6 +653,7 @@ def get_initial_state(
         delta_mode=False,
         data_mode="real_api",
         api_base_url=None,
+        color_palette=None,
         retrieval_metadata={},
         resolved_dependencies={},
     )

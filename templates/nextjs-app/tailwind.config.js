@@ -54,6 +54,15 @@ module.exports = {
                 lg: "var(--radius)",
                 md: "calc(var(--radius) - 2px)",
                 sm: "calc(var(--radius) - 4px)",
+                xl: "var(--radius-xl)",
+                "2xl": "var(--radius-2xl)",
+            },
+            boxShadow: {
+                'soft':       '0 2px 8px -2px rgba(0,0,0,0.08)',
+                'elevated':   '0 8px 24px -4px rgba(0,0,0,0.12)',
+                'floating':   '0 20px 40px -8px rgba(0,0,0,0.18)',
+                'glow':       'var(--shadow-glow)',
+                'inner-soft': 'inset 0 2px 4px 0 rgba(0,0,0,0.06)',
             },
             keyframes: {
                 "accordion-down": {
@@ -64,10 +73,33 @@ module.exports = {
                     from: { height: "var(--radix-accordion-content-height)" },
                     to: { height: "0" },
                 },
+                "fade-in": {
+                    from: { opacity: "0" },
+                    to: { opacity: "1" },
+                },
+                "slide-up": {
+                    from: { transform: "translateY(8px)", opacity: "0" },
+                    to: { transform: "translateY(0)", opacity: "1" },
+                },
+                "slide-in": {
+                    from: { transform: "translateX(-8px)", opacity: "0" },
+                    to: { transform: "translateX(0)", opacity: "1" },
+                },
+                "scale-in": {
+                    from: { transform: "scale(0.97)", opacity: "0" },
+                    to: { transform: "scale(1)", opacity: "1" },
+                },
             },
             animation: {
                 "accordion-down": "accordion-down 0.2s ease-out",
                 "accordion-up": "accordion-up 0.2s ease-out",
+                "fade-in":  "fade-in 0.3s ease-out",
+                "slide-up": "slide-up 0.3s ease-out",
+                "slide-in": "slide-in 0.25s ease-out",
+                "scale-in": "scale-in 0.2s ease-out",
+            },
+            transitionTimingFunction: {
+                'spring': 'cubic-bezier(0.175, 0.885, 0.32, 1.275)',
             },
         },
     },

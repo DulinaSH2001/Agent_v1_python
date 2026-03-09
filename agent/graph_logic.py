@@ -37,7 +37,8 @@ from agent.execution_layer import (
 import json
 import logging
 import os
-from typing import Any, Dict, List, Literal, Optional
+import re
+from typing import Any, Dict, List, Literal, Optional, Union
 
 from dotenv import load_dotenv
 from langchain_core.messages import HumanMessage, SystemMessage
@@ -82,9 +83,15 @@ Return a JSON array with tasks like:
   {"id": "task-1", "type": "create|modify", "file_path": "app/dashboard/page.tsx", "description": "Page description", "priority": 1, "dependencies": ["recharts"]}
 ]
 
+Task types:
+- "create": New file that does not exist in the template.
+- "modify": Update an existing template file (app/layout.tsx, app/page.tsx, lib/data.ts, etc.).
+
 Use app/ directory. Use TypeScript. Import existing template components when suitable.
 Use Shadcn components, sonner for toasts, Server Actions in lib/actions.ts.
 You may modify any file including layout.tsx, package.json, etc. when needed.
+Always include a "modify" task for app/page.tsx to replace the placeholder with your home page.
+Always include a "modify" task for lib/data.ts to add project-specific sample data.
 For each task, list any npm packages needed beyond what the template already provides.
 Base template does NOT include: recharts, framer-motion,
   @tanstack/react-query, axios, zustand, mapbox-gl, react-pdf, react-markdown, socket.io-client, pusher-js.
@@ -253,6 +260,19 @@ def get_planning_llm(
 
 
 # =============================================================================
+# Utility: Detect dark background from hex color
+# =============================================================================
+
+def _is_dark_background(hex_color: str) -> bool:
+    """Return True if the hex color has low luminance (dark background)."""
+    h = hex_color.lstrip('#')
+    r, g, b = int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16)
+    # Relative luminance approximation
+    luminance = 0.299 * r + 0.587 * g + 0.114 * b
+    return luminance < 128
+
+
+# =============================================================================
 # Node: plan_node (The Architect)
 # =============================================================================
 
@@ -284,6 +304,30 @@ async def plan_node(
 
     # Build the system prompt
     system_prompt = ARCHITECT_PROMPT
+
+    # Classify project type and inject context (fresh builds only)
+    project_type_info = {"type": "general", "config": {}, "confidence": 0.0}
+    if not state.get("file_system") and not state.get("visual_context"):
+        try:
+            from agent.project_classifier import classify_project
+            project_type_info = classify_project(
+                state.get("user_prompt", "")
+            )
+            if project_type_info["type"] != "general":
+                cfg = project_type_info["config"]
+                system_prompt += (
+                    f"\nProject type: {project_type_info['type']}. "
+                    f"Required pages: {', '.join(cfg['required_pages'])}. "
+                    f"Layout: {cfg['layout_style']}. "
+                    f"Navigation: {cfg['nav_style']}.\n"
+                )
+                logger.info(
+                    "plan_node: Classified as '%s' (confidence=%.2f)",
+                    project_type_info["type"],
+                    project_type_info["confidence"],
+                )
+        except Exception as e:
+            logger.warning("plan_node: Project classification failed: %s", e)
 
     # Check if this is an update request (Antigravity pattern)
     if state.get("file_system"):
@@ -366,7 +410,8 @@ async def plan_node(
         project_context, conversation_summary)
 
     # Build the user message with context
-    manifest_str = json.dumps(state.get("manifest", {}), indent=2)
+    manifest_raw = state.get("manifest", {})
+    manifest_str = manifest_raw if isinstance(manifest_raw, str) else json.dumps(manifest_raw, indent=2)
     file_system = state.get("file_system", {})
 
     user_content = ""
@@ -383,9 +428,108 @@ async def plan_node(
 ```json
 {manifest_str}
 ```
+"""
 
+    # Add endpoint hint if manifest has endpoints
+    if isinstance(manifest_raw, dict) and manifest_raw:
+        endpoints = manifest_raw.get("endpoints", [])
+        if endpoints:
+            user_content += f"(Backend has {len(endpoints)} endpoints — use these for real data fetching, not mock data)\n"
+
+    user_content += f"""
 ## User Requirements
 {state.get("user_prompt", "No specific requirements provided.")}
+"""
+
+    # ── Variation seeds (fresh builds only) ──────────────────────────────
+    # Inject random design direction so the same prompt generates different
+    # projects each time. Skipped for delta/visual-edit modes.
+    if not file_system and not state.get("visual_context"):
+        user_color_palette = state.get("color_palette")
+        if user_color_palette:
+            # Use the user-selected color palette (deterministic)
+            palette_name = user_color_palette.get("name", "Custom")
+            primary = user_color_palette.get("primary", "#3b82f6")
+            secondary = user_color_palette.get("secondary", "#6366f1")
+            accent = user_color_palette.get("accent", "#8b5cf6")
+            background = user_color_palette.get("background", "#ffffff")
+            foreground = user_color_palette.get("foreground", "#171717")
+
+            # Determine style automatically from background luminance
+            is_dark = _is_dark_background(background)
+            style_desc = "sleek dark-theme aesthetic with high contrast accents" if is_dark else "clean and modern with a light, airy feel"
+
+            from agent.execution_layer import get_color_palette_css_instruction
+            palette_css_instruction = get_color_palette_css_instruction(
+                user_color_palette)
+
+            user_content += f"""
+## Design Direction (User-Selected Palette: {palette_name})
+Style: {style_desc}.
+Colors: primary={primary}, secondary={secondary}, accent={accent}, bg={background}.
+{palette_css_instruction}
+
+Apply modern polish to EVERY page and component:
+- Hero/landing heading: font-bold tracking-tight text-5xl xl:text-7xl — use text-gradient class for color
+- Primary CTAs: gradient-primary class + hover:shadow-glow hover:-translate-y-0.5 transition-all duration-150
+- Feature/data cards: shadow-soft hover:shadow-elevated hover:-translate-y-0.5 transition-all duration-200 animate-slide-up
+- Navigation bar: sticky top-0 z-50 glass class for frosted-glass blur effect
+- Section backgrounds: alternate between bg-background and bg-muted/30 with subtle gradient overlays
+- Typography: font-semibold for section headings, tracking-tight for large text, text-muted-foreground for body
+"""
+        else:
+            # Fallback: random design direction for variety
+            import random
+            _DESIGN_STYLES = [
+                "modern and clean with plenty of whitespace",
+                "bold with vibrant accent colors and strong typography",
+                "minimalist with subtle animations and smooth transitions",
+                "professional with a structured layout and clear hierarchy",
+                "creative with asymmetric layout and unique visual elements",
+                "warm and approachable with rounded corners and soft shadows",
+                "sleek dark-theme aesthetic with high contrast accents",
+                "elegant with serif typography and refined spacing",
+            ]
+            _COLOR_PALETTES = [
+                "blue and indigo tones",
+                "emerald and teal accents",
+                "purple and violet theme",
+                "warm amber and orange highlights",
+                "neutral grays with a single bright accent color",
+                "slate and sky blue combination",
+                "rose and pink accents on neutral base",
+                "forest green with warm earth tones",
+            ]
+            style = random.choice(_DESIGN_STYLES)
+            color_theme = random.choice(_COLOR_PALETTES)
+            user_content += f"""
+## Design Direction: {style}
+Colors: {color_theme}.
+
+Apply modern polish to EVERY page and component:
+- Hero/landing heading: font-bold tracking-tight text-5xl xl:text-7xl with text-gradient class
+- Primary CTAs: gradient-primary class + hover:shadow-glow hover:-translate-y-0.5 transition-all duration-150
+- Feature/data cards: shadow-soft hover:shadow-elevated hover:-translate-y-0.5 transition-all duration-200 animate-slide-up
+- Navigation bar: sticky top-0 z-50 glass class for frosted-glass blur effect
+- Section backgrounds: alternate bg-background and bg-muted/30, use subtle gradient overlays
+- Typography: font-semibold for section headings, tracking-tight for large text, text-muted-foreground for body
+"""
+
+    # ── Anti-repetition from conversation history ────────────────────────
+    # When prior generations exist, tell the architect to vary the approach.
+    if conversation_history and not file_system:
+        prior_pages: set = set()
+        for msg in conversation_history:
+            msg_content = msg.get("content", "")
+            if isinstance(msg_content, str):
+                found = re.findall(r'app/[\w\-/]+/page\.tsx', msg_content)
+                prior_pages.update(found)
+        if prior_pages:
+            pages_str = ", ".join(sorted(prior_pages)[:10])
+            user_content += f"""
+## Variation Requirement
+Previous generations in this project created: {pages_str}.
+Use a different page structure and layout approach this time.
 """
 
     if mcp_context.get("references"):
@@ -915,7 +1059,7 @@ def create_modification_graph(
 # =============================================================================
 
 async def run_antigravity_agent(
-    manifest: Dict[str, Any],
+    manifest: Union[Dict[str, Any], str],
     user_prompt: str,
     thread_id: str,
     file_system: Optional[Dict[str, str]] = None,

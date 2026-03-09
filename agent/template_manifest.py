@@ -164,7 +164,7 @@ def build_template_manifest() -> Dict[str, Any]:
         )
 
     # Config files
-    for cfg in ["next.config.js", "tsconfig.json", "tailwind.config.js", "package.json"]:
+    for cfg in ["next.config.js", "tsconfig.json", "tailwind.config.js", "postcss.config.js", "package.json"]:
         if (_TEMPLATE_DIR / cfg).exists():
             manifest["config_files"].append(cfg)
 
@@ -234,10 +234,26 @@ def get_short_manifest_for_builder() -> str:
     m = build_template_manifest()
     lines = ["## Available Components\n"]
 
-    # Custom components (compact)
+    # One-line usage examples per custom component
+    _USAGE_EXAMPLES = {
+        "components/layout/Sidebar.tsx": "<Sidebar links={navLinks} />",
+        "components/layout/Header.tsx": '<Header breadcrumbs={[{label: "Page"}]} />',
+        "components/layout/PageContainer.tsx": "<PageContainer>{children}</PageContainer>",
+        "components/layout/Footer.tsx": "<Footer />",
+        "components/data/DataTable.tsx": "<DataTable<T> data={items} columns={cols} />",
+        "components/data/StatCard.tsx": '<StatCard title="Revenue" value="$1k" change={5} icon={DollarSign} />',
+        "components/data/EmptyState.tsx": '<EmptyState title="No items" description="Get started" />',
+    }
+
+    # Custom components (compact with usage examples)
     for path, info in m["custom_components"].items():
         props_str = f"({info['props']})" if info["props"] else "()"
-        lines.append(f"- `import {{ {', '.join(info['exports'])} }} from \"{info['import_path']}\"`  {props_str}")
+        usage = _USAGE_EXAMPLES.get(path, "")
+        usage_hint = f"\n  Usage: `{usage}`" if usage else ""
+        lines.append(
+            f"- `import {{ {', '.join(info['exports'])} }} "
+            f"from \"{info['import_path']}\"`  {props_str}{usage_hint}"
+        )
 
     lines.append("")
     lines.append(f"Shadcn: {', '.join(m['shadcn_components'])}")

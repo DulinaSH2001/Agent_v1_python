@@ -71,7 +71,7 @@ export function Header({ breadcrumbs = [], user, className }: HeaderProps) {
     return (
         <header
             className={cn(
-                "flex h-16 items-center justify-between border-b bg-background px-6",
+                "flex h-16 items-center justify-between border-b bg-background/80 backdrop-blur-md shadow-sm sticky top-0 z-50 px-6",
                 className
             )}
         >

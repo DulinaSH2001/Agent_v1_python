@@ -11,10 +11,7 @@ import type { NavLink } from "@/types";
 
 /** Top-level navigation links — used by Sidebar, Header, and Footer */
 export const navLinks: NavLink[] = [
-    { href: "/", label: "Dashboard", icon: "LayoutDashboard" },
-    { href: "/analytics", label: "Analytics", icon: "BarChart3" },
-    { href: "/users", label: "Users", icon: "Users" },
-    { href: "/settings", label: "Settings", icon: "Settings" },
+    { href: "/", label: "Home", icon: "Home" },
 ];
 
 // ─── Social Links ─────────────────────────────────────────────────────────────

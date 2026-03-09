@@ -87,7 +87,7 @@ export function Sidebar({ navLinks = defaultNavLinks, className }: SidebarProps)
     return (
         <aside
             className={cn(
-                "relative flex h-full flex-col border-r bg-background transition-all duration-300",
+                "relative flex h-full flex-col border-r bg-background/95 backdrop-blur-sm shadow-soft transition-all duration-300",
                 collapsed ? "w-16" : "w-64",
                 className
             )}

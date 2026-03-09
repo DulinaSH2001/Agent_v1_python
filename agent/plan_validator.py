@@ -220,8 +220,78 @@ def validate_plan(
             all_deps.update(deps)
             task["dependencies"] = unique
 
+    # ── Rule 7: Project type required pages check ──────────────────────────
+    # Warn if the plan is missing required pages for the detected project type.
+    try:
+        from agent.project_classifier import classify_project
+        all_descriptions = " ".join(
+            t.get("description", "") for t in corrected
+        )
+        all_file_paths = " ".join(
+            t.get("file_path", "") for t in corrected
+        )
+        combined_text = f"{all_descriptions} {all_file_paths}"
+        project_info = classify_project(combined_text)
+
+        if project_info["type"] != "general":
+            required = project_info["config"].get("required_pages", [])
+            combined_lower = combined_text.lower()
+            for page in required:
+                # Check each term in "hero/landing" style entries
+                page_terms = [t.strip() for t in page.lower().split("/")]
+                if not any(term in combined_lower for term in page_terms):
+                    warnings.append(
+                        f"Project type '{project_info['type']}' typically "
+                        f"includes a '{page}' page. Consider adding it."
+                    )
+    except Exception as e:
+        logger.debug("plan_validator: Project type check skipped: %s", e)
+
+    # ── Rule 8: Template file operation correction ───────────────────────
+    # If architect says type="create" for a known template file, correct
+    # to "modify". Otherwise the generator will SKIP the task entirely
+    # (execution_layer.py skips "create" tasks for template files).
+    _TEMPLATE_FILES_TO_MODIFY = {
+        "app/layout.tsx", "app/page.tsx", "app/loading.tsx", "app/error.tsx",
+        "lib/data.ts", "lib/actions.ts", "lib/utils.ts",
+        "styles/globals.css", "package.json", "tailwind.config.js",
+        "postcss.config.js", "next.config.js", "tsconfig.json",
+    }
+    for task in corrected:
+        fp = task.get("file_path", "")
+        if fp in _TEMPLATE_FILES_TO_MODIFY and task.get("type") == "create":
+            task["type"] = "modify"
+            warnings.append(
+                f"Corrected task type for '{fp}': "
+                f"'create' -> 'modify' (file exists in template)."
+            )
+
+    # ── Rule 9: Auto-add lib/data.ts task if missing ───────────────────
+    # Most projects need sample data. Ensure lib/data.ts is modified to
+    # include project-specific data constants.
+    has_data_task = any(
+        t.get("file_path") == "lib/data.ts" for t in corrected
+    )
+    if not has_data_task and len(corrected) > 1:
+        corrected.insert(0, {
+            "id": "auto-data-ts",
+            "type": "modify",
+            "file_path": "lib/data.ts",
+            "description": (
+                "Add sample data constants for all entities in this project. "
+                "Export typed arrays with realistic names, dates, and amounts. "
+                "Import types from @/types/index.ts. Keep existing navLinks "
+                "and socialLinks exports."
+            ),
+            "priority": 0,
+        })
+        warnings.append(
+            "Auto-added lib/data.ts task for centralized sample data."
+        )
+
     logger.info(
-        f"plan_validator: {len(warnings)} correction(s) applied. "
-        f"Plan: {len(plan)} → {len(corrected)} tasks."
+        "plan_validator: %d correction(s) applied. "
+        "Plan: %d -> %d tasks.",
+        len(warnings), len(plan), len(corrected),
     )
     return corrected, warnings

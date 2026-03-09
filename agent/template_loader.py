@@ -173,6 +173,7 @@ Do NOT regenerate these unless they need modification for the user's requirement
 - next.config.js
 - tsconfig.json
 - tailwind.config.js (Shadcn theme tokens)
+- postcss.config.js (Tailwind + autoprefixer pipeline)
 
 ### Styles (DO NOT regenerate)
 - styles/globals.css (CSS variables for dark/light mode)

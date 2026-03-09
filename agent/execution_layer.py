@@ -137,6 +137,8 @@ export default function PaymentForm() {
 }
 ```
 
+Styling: Use shadow-soft/shadow-elevated for depth. Cards: hover:shadow-elevated hover:-translate-y-0.5 transition-all duration-200. Buttons: hover:shadow-glow hover:-translate-y-px transition-all duration-150. Hero headings: font-bold tracking-tight text-5xl (use text-gradient class for color). Gradient CTAs: gradient-primary class. Nav/headers: sticky top-0 z-50 glass class for blur. Page content: animate-fade-in on main wrapper. animate-slide-up on cards when page loads.
+
 Return ONLY code. No markdown, no explanations.
 """
 
@@ -150,6 +152,63 @@ Generate all data as inline TypeScript constants — no fetch() calls, no API re
 - Use TypeScript interfaces that match the intended API shape so switching to real API later is easy
 - Populate the full UI with enough sample rows/items so the user sees a complete, realistic design
 """
+
+
+def hex_to_hsl(hex_color: str) -> str:
+    """Convert a hex color string to HSL format for Tailwind/Shadcn CSS variables.
+
+    Args:
+        hex_color: Color in hex format, e.g. '#3b82f6' or '3b82f6'.
+
+    Returns:
+        HSL string without 'hsl()' wrapper, e.g. '217 91% 60%'.
+    """
+    hex_color = hex_color.lstrip('#')
+    r, g, b = int(hex_color[0:2], 16) / 255.0, int(hex_color[2:4],
+                                                   16) / 255.0, int(hex_color[4:6], 16) / 255.0
+    max_c, min_c = max(r, g, b), min(r, g, b)
+    l = (max_c + min_c) / 2.0
+    if max_c == min_c:
+        h = s = 0.0
+    else:
+        d = max_c - min_c
+        s = d / (2.0 - max_c - min_c) if l > 0.5 else d / (max_c + min_c)
+        if max_c == r:
+            h = (g - b) / d + (6 if g < b else 0)
+        elif max_c == g:
+            h = (b - r) / d + 2
+        else:
+            h = (r - g) / d + 4
+        h /= 6.0
+    return f"{round(h * 360)} {round(s * 100)}% {round(l * 100)}%"
+
+
+def get_color_palette_css_instruction(palette: dict) -> str:
+    """Build a CSS custom property instruction block from a user-selected palette.
+
+    The returned string tells the LLM exactly which HSL values to set in
+    globals.css :root / .dark selectors for Tailwind/Shadcn theming.
+    """
+    primary_hsl = hex_to_hsl(palette.get("primary", "#3b82f6"))
+    secondary_hsl = hex_to_hsl(palette.get("secondary", "#6366f1"))
+    accent_hsl = hex_to_hsl(palette.get("accent", "#8b5cf6"))
+    background_hsl = hex_to_hsl(palette.get("background", "#ffffff"))
+    foreground_hsl = hex_to_hsl(palette.get("foreground", "#171717"))
+    primary = palette.get("primary", "#3b82f6")
+    accent = palette.get("accent", "#8b5cf6")
+    return f"""In `styles/globals.css`, set these CSS custom properties in the `:root` selector:
+  --background: {background_hsl};
+  --foreground: {foreground_hsl};
+  --primary: {primary_hsl};
+  --primary-foreground: {foreground_hsl};
+  --secondary: {secondary_hsl};
+  --accent: {accent_hsl};
+  --shadow-glow: 0 0 20px -5px {primary}66;
+Use the same values (or appropriate light/dark variants) in the `.dark` selector.
+Also apply palette throughout the UI:
+- Hero/banner backgrounds: bg-gradient-to-br from-[{primary}]/10 to-[{accent}]/10, or text-gradient on main heading
+- Primary buttons: bg-[{primary}] hover:bg-[{primary}]/90 hover:shadow-glow
+- Cards: border-[{primary}]/20 hover:border-[{primary}]/40 shadow-soft hover:shadow-elevated"""
 
 
 def get_real_api_instruction(api_base_url: str = None) -> str:
@@ -245,10 +304,10 @@ def _get_relevant_corrections(description: str) -> str:
         return ""
 
     lines = [
-        f"• [{c['id']}] {c['pitfall']} → {c['fix']}"
+        f"- [{c['id']}] Preferred: {c['fix']} (instead of {c.get('pitfall', 'common alternative')})"
         for c in relevant
     ]
-    return "## Reference Patterns\n" + "\n".join(lines) + "\n"
+    return "## Preferred Patterns\n" + "\n".join(lines) + "\n"
 
 
 def _get_template_injection(description: str, template_files: dict) -> str:
@@ -1727,10 +1786,20 @@ async def generation_node(
             desc = t.get("description", "")
             task_type = t.get("type", "create")
             try:
+                # Enhanced query: add file path context for better matching
+                query_text = f"{desc} file:{fp}"
+                fp_lower = fp.lower()
+                if "layout" in fp_lower or "sidebar" in desc.lower() or "header" in desc.lower():
+                    query_text += " layout component navigation"
+                elif fp.endswith("page.tsx"):
+                    query_text += " page component server component"
+                elif "data" in fp_lower or "table" in desc.lower():
+                    query_text += " data display table"
+
                 chunks = retrieve_relevant_chunks(
-                    query=desc,
+                    query=query_text,
                     task_description=f"{task_type} {fp}: {desc}",
-                    top_k=3,
+                    top_k=4,
                 )
                 return fp, rag_instance.format_for_prompt(chunks) if chunks else ""
             except Exception:
@@ -1834,15 +1903,39 @@ async def generation_node(
         if component_signatures:
             user_content += f"\n{component_signatures}\n"
 
+        # Inject targeted component hints based on task context
+        desc_lower = description.lower()
+        fp_lower = file_path.lower()
+        _targeted_hints = []
+        if any(kw in desc_lower for kw in ("sidebar", "navigation", "nav")):
+            if "layout" in fp_lower or "layout" in desc_lower:
+                _targeted_hints.append(
+                    '```tsx\nimport { Sidebar } from "@/components/layout/Sidebar";\n'
+                    'import { Header } from "@/components/layout/Header";\n'
+                    'import { PageContainer } from "@/components/layout/PageContainer";\n'
+                    'import { navLinks } from "@/lib/data";\n```'
+                )
+        if any(kw in desc_lower for kw in ("table", "list", "data view", "grid")):
+            _targeted_hints.append(
+                '```tsx\nimport { DataTable } from "@/components/data/DataTable";\n'
+                'import type { TableColumn } from "@/types";\n```'
+            )
+        if any(kw in desc_lower for kw in ("stat", "metric", "kpi", "overview", "dashboard")):
+            _targeted_hints.append(
+                '```tsx\nimport { StatCard } from "@/components/data/StatCard";\n```'
+            )
+        if _targeted_hints:
+            user_content += "\n## Suggested Imports\n" + "\n".join(_targeted_hints) + "\n"
+
         # Use pre-fetched RAG context (no extra Pinecone call per task)
         rag_ctx = rag_context_map.get(file_path, "")
         if rag_ctx:
             user_content += f"\n{rag_ctx}\n"
 
-        # Inject pre-built template source for known component patterns (disabled: can trigger content filter)
-        # template_injection = _get_template_injection(description, template_files)
-        # if template_injection:
-        #     user_content += f"\n{template_injection}\n"
+        # Inject pre-built template source for known component patterns
+        template_injection = _get_template_injection(description, template_files)
+        if template_injection:
+            user_content += f"\n{template_injection}\n"
 
         if existing_content:
             user_content += f"""
@@ -1851,10 +1944,10 @@ async def generation_node(
 {existing_content}
 ```
 """
-        # Inject known pitfall corrections relevant to this task (disabled: can trigger content filter)
-        # corrections = _get_relevant_corrections(description)
-        # if corrections:
-        #     user_content += f"\n{corrections}\n"
+        # Inject known pitfall corrections relevant to this task
+        corrections = _get_relevant_corrections(description)
+        if corrections:
+            user_content += f"\n{corrections}\n"
 
         user_content += """
 ## Output

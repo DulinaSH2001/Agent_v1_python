@@ -15,14 +15,14 @@ import hashlib
 import hmac
 import logging
 import os
-from typing import Any, Dict, List, Literal, Optional
+from typing import Any, Dict, List, Literal, Optional, Union
 
 import httpx
 from dotenv import load_dotenv
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException, Header, Request, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ConfigDict, field_validator
 from langgraph.types import Command
 from langgraph.checkpoint.memory import MemorySaver
 from ably import AblyRest
@@ -148,13 +148,15 @@ class HealthResponse(BaseModel):
 
 class GenerateRequest(BaseModel):
     """Request payload for starting code generation."""
+    model_config = ConfigDict(extra="allow", str_strip_whitespace=False)  # Allow extra fields, flexible manifest type
+
     query: str = Field(description="User's prompt for code generation")
     user_id: str = Field(description="User identifier")
     job_id: str = Field(description="Unique job identifier from backend")
     max_revisions: int = Field(
         default=1, description="Maximum revision iterations")
-    manifest: Optional[Dict[str, Any]] = Field(
-        default=None, description="Backend API manifest")
+    manifest: Optional[Any] = Field(
+        default=None, description="Backend API manifest (dict or string)")
     org_id: Optional[str] = Field(default=None, description="Organization ID")
     project_id: Optional[str] = Field(default=None, description="Project ID")
     org_slug: Optional[str] = Field(
@@ -167,6 +169,28 @@ class GenerateRequest(BaseModel):
         default="real_api", description="Data mode: 'real_api' or 'sample_data'")
     api_base_url: Optional[str] = Field(
         default=None, description="User-provided backend base URL for real_api mode (e.g. 'http://localhost:8080')")
+    color_palette: Optional[Dict[str, Any]] = Field(
+        default=None, description="User-selected color palette with keys: name, primary, secondary, accent, background, foreground (hex)")
+    # Supabase integration fields (optional, passed by backend but handled separately)
+    supabase_connection: Optional[Dict[str, Any]] = Field(
+        default=None, description="Supabase connection details (handled by backend)")
+    supabase_url: Optional[str] = Field(default=None, description="Supabase URL")
+    supabase_anon_key: Optional[str] = Field(default=None, description="Supabase anon key")
+    supabase_service_role_key: Optional[str] = Field(default=None, description="Supabase service role key")
+    supabase_db_password: Optional[str] = Field(default=None, description="Supabase DB password")
+    supabase_project_ref: Optional[str] = Field(default=None, description="Supabase project ref")
+    # Metadata (optional, for backend tracking)
+    metadata: Optional[Dict[str, Any]] = Field(
+        default=None, description="Additional metadata from backend")
+
+    @field_validator('manifest', mode='before')
+    @classmethod
+    def coerce_manifest(cls, v):
+        """Accept manifest as either dict or string."""
+        if v is None or isinstance(v, (dict, str)):
+            return v
+        # Try to convert to string for anything else
+        return str(v)
 
 
 class GenerateResponse(BaseModel):
@@ -514,7 +538,8 @@ def _scrub_payment_sdk(file_system: Dict[str, str]) -> Dict[str, str]:
                         }
                 # Remove --turbo flag: not supported in all environments
                 if "scripts" in pkg and "dev" in pkg["scripts"]:
-                    pkg["scripts"]["dev"] = pkg["scripts"]["dev"].replace(" --turbo", "").replace("--turbo ", "").strip()
+                    pkg["scripts"]["dev"] = pkg["scripts"]["dev"].replace(
+                        " --turbo", "").replace("--turbo ", "").strip()
                 scrubbed[path] = _json.dumps(pkg, indent=4)
             except Exception:
                 scrubbed[path] = content
@@ -544,6 +569,7 @@ async def run_generation_task(
     visual_context: Optional[Dict[str, Any]] = None,
     data_mode: Optional[str] = "real_api",
     api_base_url: Optional[str] = None,
+    color_palette: Optional[Dict[str, Any]] = None,
 ):
     """Background task to run the agent and publish status updates."""
 
@@ -603,6 +629,9 @@ async def run_generation_task(
         # Attach user-provided API base URL (used in real_api mode)
         if api_base_url:
             initial_state["api_base_url"] = api_base_url
+        # Attach user-selected color palette for deterministic theming
+        if color_palette:
+            initial_state["color_palette"] = color_palette
 
         # Get config using job_id as thread_id
         config = get_graph_config(job_id)
@@ -794,6 +823,7 @@ async def start_generation(
         visual_context=request.visual_context,
         data_mode=request.data_mode,
         api_base_url=request.api_base_url,
+        color_palette=request.color_palette,
     )
 
     return GenerateResponse(
