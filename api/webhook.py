@@ -64,8 +64,10 @@ async def lifespan(app: FastAPI):
     redis_url = os.getenv("REDIS_URL")
     if redis_url:
         try:
-            from langgraph.checkpoint.redis.aio import AsyncRedisSaver
-            _redis_checkpointer = AsyncRedisSaver.from_conn_info(url=redis_url)
+            # Reuse project-level Redis factory to stay compatible with
+            # installed langgraph-checkpoint-redis versions.
+            from agent.state_engine import create_redis_saver
+            _redis_checkpointer = create_redis_saver(redis_url=redis_url)
             logger.info("lifespan: Redis checkpointer ready")
         except Exception as exc:
             logger.warning(f"lifespan: Redis unavailable — {exc}")
@@ -148,7 +150,9 @@ class HealthResponse(BaseModel):
 
 class GenerateRequest(BaseModel):
     """Request payload for starting code generation."""
-    model_config = ConfigDict(extra="allow", str_strip_whitespace=False)  # Allow extra fields, flexible manifest type
+    model_config = ConfigDict(
+        # Allow extra fields, flexible manifest type
+        extra="allow", str_strip_whitespace=False)
 
     query: str = Field(description="User's prompt for code generation")
     user_id: str = Field(description="User identifier")
@@ -174,11 +178,16 @@ class GenerateRequest(BaseModel):
     # Supabase integration fields (optional, passed by backend but handled separately)
     supabase_connection: Optional[Dict[str, Any]] = Field(
         default=None, description="Supabase connection details (handled by backend)")
-    supabase_url: Optional[str] = Field(default=None, description="Supabase URL")
-    supabase_anon_key: Optional[str] = Field(default=None, description="Supabase anon key")
-    supabase_service_role_key: Optional[str] = Field(default=None, description="Supabase service role key")
-    supabase_db_password: Optional[str] = Field(default=None, description="Supabase DB password")
-    supabase_project_ref: Optional[str] = Field(default=None, description="Supabase project ref")
+    supabase_url: Optional[str] = Field(
+        default=None, description="Supabase URL")
+    supabase_anon_key: Optional[str] = Field(
+        default=None, description="Supabase anon key")
+    supabase_service_role_key: Optional[str] = Field(
+        default=None, description="Supabase service role key")
+    supabase_db_password: Optional[str] = Field(
+        default=None, description="Supabase DB password")
+    supabase_project_ref: Optional[str] = Field(
+        default=None, description="Supabase project ref")
     # Metadata (optional, for backend tracking)
     metadata: Optional[Dict[str, Any]] = Field(
         default=None, description="Additional metadata from backend")
@@ -483,6 +492,12 @@ async def health_check():
         status="healthy",
         version="0.5.0",
     )
+
+
+@app.get("/")
+async def root():
+    """Simple root endpoint for platform probes and quick manual checks."""
+    return {"status": "ok", "service": "antigravity-agent", "version": "0.5.0"}
 
 
 # =============================================================================
