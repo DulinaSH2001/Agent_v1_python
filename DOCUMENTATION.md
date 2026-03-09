@@ -93,17 +93,17 @@ START
 └──────┬──────┘                   │
        │                          │
        ▼                          │
-┌──────────────┐                  │
-│trigger_build │──── PAUSE (Webhook)
-└──────┬───────┘                  │
-       │                          │
-       ▼                          │
-   ┌───────┐  failed   ┌─────────┴──────┐
-   │SUCCESS├──────────▶│   reflexion    │
-   └───┬───┘           │  (Debugger)    │
-       │               └────────────────┘
+       │
        ▼
       END
+
+Default runtime build-fix path (side-channel):
+frontend build error -> POST /api/v1/generate/{job_id}/build-error
+                   -> run_build_fix_task -> file_generated/reflexion_progress
+
+Legacy/manual interrupt path:
+persistence -> trigger_build -> /callbacks/build-status/{thread_id}
+            -> reflexion/escalation loop
 ```
 
 ---
@@ -281,16 +281,15 @@ async function startAgent(manifest, prompt, sessionId) {
     // Run Python agent via subprocess or HTTP bridge
 }
 
-// Receive build status
-app.post('/api/build-complete', async (req, res) => {
-    const { sessionId, status, logs } = req.body;
-    
-    // Forward to agent webhook
+// Receive frontend build errors and forward for side-channel auto-fix
+app.post('/api/build-error', async (req, res) => {
+    const { jobId, phase, errors, fullOutput } = req.body;
+
     await axios.post(
-        `http://localhost:8000/callbacks/build-status/${sessionId}`,
-        { status, logs }
+        `http://localhost:8000/api/v1/generate/${jobId}/build-error`,
+        { phase, errors, fullOutput, retries_used: 0 }
     );
-    
+
     res.json({ success: true });
 });
 ```
@@ -368,7 +367,7 @@ state = await get_agent_state(thread_id: str)
 | `approval_node` | Gatekeeper | Pauses for human approval |
 | `generation_node` | Builder | Generates code files |
 | `persistence_node` | Uploader | Uploads to Azure Blob |
-| `trigger_build_node` | - | Triggers external build |
+| `trigger_build_node` | - | Triggers external build (legacy interrupt flow) |
 | `reflexion_node` | Debugger | Analyzes errors, generates fixes |
 | `escalation_node` | - | Requests human help |
 
@@ -376,7 +375,31 @@ state = await get_agent_state(thread_id: str)
 
 ## 8. Webhook Integration
 
-### Build Status Webhook
+### Build Error Auto-Fix (Default Runtime)
+
+**Endpoint:** `POST /api/v1/generate/{job_id}/build-error`
+
+**Request Body:**
+```json
+{
+    "phase": "preflight" | "install" | "dev",
+    "errors": ["Build output line 1", "Error message..."],
+    "fullOutput": "Full terminal output (optional)",
+    "retries_used": 0
+}
+```
+
+**Response:**
+```json
+{
+    "status": "fixing",
+    "message": "Auto-fix started (iteration 1)",
+    "job_id": "project-123",
+    "iteration": 1
+}
+```
+
+### Build Status Webhook (Legacy/Compatibility)
 
 **Endpoint:** `POST /callbacks/build-status/{thread_id}`
 
@@ -433,7 +456,7 @@ uvicorn api.webhook:app --port 8000
 # Terminal 2: Run workflow
 python3 test_full_workflow.py
 
-# Terminal 3: Send build result
+# Terminal 3: Send build result (legacy interrupt flow only)
 curl -X POST http://localhost:8000/callbacks/build-status/test-session-001 \
   -H "Content-Type: application/json" \
   -d '{"status": "success", "logs": ["Build completed"]}'
@@ -450,7 +473,8 @@ curl -X POST http://localhost:8000/callbacks/build-status/test-session-001 \
 | `AZURE_OPENAI_ENDPOINT not set` | Check `.env` file exists and is loaded |
 | Graph pauses but never resumes | Ensure same `thread_id` when calling resume |
 | Empty `file_system` | Check `implementation_plan` has tasks |
-| Build webhook not working | Verify server running on correct port |
+| Build auto-fix not running | Verify frontend sends `/api/v1/generate/{job_id}/build-error` |
+| Legacy build webhook not working | Verify server running and use `/callbacks/build-status/{thread_id}` |
 
 ---
 

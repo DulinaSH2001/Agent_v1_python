@@ -1,0 +1,246 @@
+/**
+ * @component DataTable
+ * @description Generic sortable, searchable, paginated data table. Always import this instead of creating a new table.
+ * @example
+ * ```tsx
+ * import { DataTable } from "@/components/data/DataTable";
+ * import type { TableColumn } from "@/types";
+ * import { Badge } from "@/components/ui/badge";
+ *
+ * interface User { id: string; name: string; email: string; role: string; }
+ *
+ * const columns: TableColumn<User>[] = [
+ *   { key: "name", header: "Name" },
+ *   { key: "email", header: "Email" },
+ *   { key: "role", header: "Role", render: (v) => <Badge>{String(v)}</Badge> },
+ * ];
+ *
+ * // In your page/component:
+ * <DataTable data={users} columns={columns} searchable pageSize={10} />
+ * <DataTable data={orders} columns={orderColumns} isLoading={isLoading} emptyMessage="No orders yet." />
+ * ```
+ */
+"use client";
+
+import { useState, useMemo } from "react";
+import {
+    Table,
+    TableBody,
+    TableCell,
+    TableHead,
+    TableHeader,
+    TableRow,
+} from "@/components/ui/table";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Skeleton } from "@/components/ui/skeleton";
+import { ChevronUp, ChevronDown, ChevronsUpDown, Search } from "lucide-react";
+import { cn } from "@/lib/utils";
+import type { TableColumn, SortConfig, SortDirection } from "@/types";
+
+// Internal row accessor — safe with T extends Record<string, any>
+const _get = (row: Record<string, any>, key: string) => row[key];
+
+interface DataTableProps<T> {
+    data: T[];
+    columns: TableColumn<T>[];
+    isLoading?: boolean;
+    searchable?: boolean;
+    searchPlaceholder?: string;
+    pageSize?: number;
+    className?: string;
+    emptyMessage?: string;
+}
+
+function SortIcon({ direction }: { direction?: SortDirection }) {
+    if (direction === "asc") return <ChevronUp className="ml-1 h-3.5 w-3.5" />;
+    if (direction === "desc") return <ChevronDown className="ml-1 h-3.5 w-3.5" />;
+    return <ChevronsUpDown className="ml-1 h-3.5 w-3.5 opacity-40" />;
+}
+
+export function DataTable<T extends Record<string, any>>({
+    data,
+    columns,
+    isLoading = false,
+    searchable = true,
+    searchPlaceholder = "Search...",
+    pageSize = 10,
+    className,
+    emptyMessage = "No results found.",
+}: DataTableProps<T>) {
+    const [search, setSearch] = useState("");
+    const [sort, setSort] = useState<SortConfig | null>(null);
+    const [page, setPage] = useState(0);
+
+    const filtered = useMemo(() => {
+        if (!search.trim()) return data;
+        const q = search.toLowerCase();
+        return data.filter((row) =>
+            columns.some((col) => {
+                const val = _get(row as Record<string, any>, col.key);
+                return String(val ?? "").toLowerCase().includes(q);
+            })
+        );
+    }, [data, search, columns]);
+
+    const sorted = useMemo(() => {
+        if (!sort) return filtered;
+        return [...filtered].sort((a, b) => {
+            const av = _get(a as Record<string, any>, sort.key);
+            const bv = _get(b as Record<string, any>, sort.key);
+            const cmp = String(av ?? "") < String(bv ?? "") ? -1 : 1;
+            return sort.direction === "asc" ? cmp : -cmp;
+        });
+    }, [filtered, sort]);
+
+    const paginated = useMemo(
+        () => sorted.slice(page * pageSize, page * pageSize + pageSize),
+        [sorted, page, pageSize]
+    );
+
+    const totalPages = Math.ceil(sorted.length / pageSize);
+
+    function toggleSort(key: string) {
+        setSort((prev) => {
+            if (prev?.key === key) {
+                if (prev.direction === "asc") return { key, direction: "desc" };
+                return null;
+            }
+            return { key, direction: "asc" };
+        });
+        setPage(0);
+    }
+
+    if (isLoading) {
+        return (
+            <div className={cn("space-y-3", className)}>
+                {searchable && <Skeleton className="h-9 w-64" />}
+                <div className="rounded-md border">
+                    <Table>
+                        <TableHeader>
+                            <TableRow>
+                                {columns.map((col) => (
+                                    <TableHead key={String(col.key)}>
+                                        <Skeleton className="h-4 w-20" />
+                                    </TableHead>
+                                ))}
+                            </TableRow>
+                        </TableHeader>
+                        <TableBody>
+                            {Array.from({ length: 5 }).map((_, i) => (
+                                <TableRow key={i}>
+                                    {columns.map((col) => (
+                                        <TableCell key={String(col.key)}>
+                                            <Skeleton className="h-4 w-full" />
+                                        </TableCell>
+                                    ))}
+                                </TableRow>
+                            ))}
+                        </TableBody>
+                    </Table>
+                </div>
+            </div>
+        );
+    }
+
+    return (
+        <div className={cn("space-y-3", className)}>
+            {searchable && (
+                <div className="relative w-64">
+                    <Search className="absolute left-2.5 top-2.5 h-4 w-4 text-muted-foreground" />
+                    <Input
+                        placeholder={searchPlaceholder}
+                        value={search}
+                        onChange={(e) => {
+                            setSearch(e.target.value);
+                            setPage(0);
+                        }}
+                        className="pl-8"
+                    />
+                </div>
+            )}
+
+            <div className="rounded-md border">
+                <Table>
+                    <TableHeader>
+                        <TableRow>
+                            {columns.map((col) => (
+                                <TableHead
+                                    key={String(col.key)}
+                                    className={cn(col.sortable !== false && "cursor-pointer select-none")}
+                                    onClick={() => col.sortable !== false && toggleSort(col.key)}
+                                >
+                                    <span className="flex items-center">
+                                        {col.header}
+                                        {col.sortable !== false && (
+                                            <SortIcon
+                                                direction={
+                                                    sort?.key === col.key
+                                                        ? sort.direction
+                                                        : undefined
+                                                }
+                                            />
+                                        )}
+                                    </span>
+                                </TableHead>
+                            ))}
+                        </TableRow>
+                    </TableHeader>
+                    <TableBody>
+                        {paginated.length === 0 ? (
+                            <TableRow>
+                                <TableCell
+                                    colSpan={columns.length}
+                                    className="h-24 text-center text-muted-foreground"
+                                >
+                                    {emptyMessage}
+                                </TableCell>
+                            </TableRow>
+                        ) : (
+                            paginated.map((row, i) => (
+                                <TableRow key={i}>
+                                    {columns.map((col) => (
+                                        <TableCell key={String(col.key)}>
+                                            {col.render
+                                                ? col.render(_get(row as Record<string, any>, col.key), row)
+                                                : String(_get(row as Record<string, any>, col.key) ?? "")}
+                                        </TableCell>
+                                    ))}
+                                </TableRow>
+                            ))
+                        )}
+                    </TableBody>
+                </Table>
+            </div>
+
+            {totalPages > 1 && (
+                <div className="flex items-center justify-between text-sm text-muted-foreground">
+                    <span>
+                        {sorted.length} result{sorted.length !== 1 ? "s" : ""}
+                    </span>
+                    <div className="flex items-center gap-2">
+                        <Button
+                            variant="outline"
+                            size="sm"
+                            onClick={() => setPage((p) => Math.max(0, p - 1))}
+                            disabled={page === 0}
+                        >
+                            Previous
+                        </Button>
+                        <span>
+                            {page + 1} / {totalPages}
+                        </span>
+                        <Button
+                            variant="outline"
+                            size="sm"
+                            onClick={() => setPage((p) => Math.min(totalPages - 1, p + 1))}
+                            disabled={page >= totalPages - 1}
+                        >
+                            Next
+                        </Button>
+                    </div>
+                </div>
+            )}
+        </div>
+    );
+}

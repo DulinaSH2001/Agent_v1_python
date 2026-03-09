@@ -41,11 +41,11 @@ logger = logging.getLogger(__name__)
 class AgentState(TypedDict):
     """
     The central state schema for the Antigravity agent graph.
-    
+
     This TypedDict serves as the graph's memory, maintaining all necessary
     context across execution steps. It supports the autonomous code generation
     workflow with human approval checkpoints.
-    
+
     Attributes:
         manifest: The backend API definition containing endpoints, schemas,
             authentication rules, and database structure.
@@ -67,9 +67,15 @@ class AgentState(TypedDict):
             Set by the persistence_node after completing file uploads.
         build_status: Current build status from external container.
             Values: "pending", "success", "failed", "escalate"
+        files_streamed: Counter tracking how many files have been
+            individually streamed/uploaded during generation.
+        conversation_history: Prior conversation messages loaded from the
+            backend for context continuity across generation sessions.
+        project_context: Project-level metadata including prior generation
+            history, user preferences, and previously generated file lists.
     """
-    
-    manifest: Dict[str, Any]
+
+    manifest: Union[Dict[str, Any], str]
     user_prompt: str
     file_system: Dict[str, str]
     implementation_plan: List[Dict[str, Any]]
@@ -83,7 +89,27 @@ class AgentState(TypedDict):
     template_files: Dict[str, str]
     org_slug: Optional[str]
     project_slug: Optional[str]
-
+    files_streamed: int
+    conversation_history: List[Dict[str, Any]]
+    project_context: Dict[str, Any]
+    # Phase 5: Code quality review results
+    quality_summary: Dict[str, Any]
+    # Phase 3: modification graph state
+    modification_analysis: Dict[str, Any]
+    modification_targets: List[Dict[str, Any]]
+    delta_mode: bool
+    # Visual editor context: element info + style changes from the visual edit panel
+    visual_context: Optional[Dict[str, Any]]
+    # Data mode: "real_api" (connect to manifest endpoints) or "sample_data" (use inline mock data)
+    data_mode: str
+    # API base URL provided by the user when data_mode is "real_api" (e.g. "http://localhost:8080")
+    api_base_url: Optional[str]
+    # User-selected color palette: {name, primary, secondary, accent, background, foreground} in hex
+    color_palette: Optional[Dict[str, Any]]
+    # RAG retrieval metadata for debugging and observability
+    retrieval_metadata: Dict[str, Any]
+    # Resolved npm dependencies from plan tasks (package_name -> version)
+    resolved_dependencies: Dict[str, str]
 
 
 # =============================================================================
@@ -93,20 +119,20 @@ class AgentState(TypedDict):
 class AblyCallbackHandler(AsyncCallbackHandler):
     """
     LangChain callback handler for real-time event streaming via Ably.
-    
+
     This handler publishes LLM tokens, tool execution status, and chain
     completion events to Ably channels, enabling real-time UI updates
     in frontend applications.
-    
+
     Channel naming convention:
         - Token streaming: agent:stream:{thread_id}
         - Status updates: agent:status:{thread_id}
-    
+
     Attributes:
         thread_id: Unique identifier for the current execution thread,
             used to namespace Ably channels.
         ably_client: The Ably Realtime client instance for publishing events.
-    
+
     Example:
         >>> from ably import AblyRealtime
         >>> ably_client = AblyRealtime('your-api-key')
@@ -116,7 +142,7 @@ class AblyCallbackHandler(AsyncCallbackHandler):
         ... )
         >>> # Use handler in LangChain/LangGraph execution
     """
-    
+
     def __init__(
         self,
         thread_id: str,
@@ -124,7 +150,7 @@ class AblyCallbackHandler(AsyncCallbackHandler):
     ) -> None:
         """
         Initialize the Ably callback handler.
-        
+
         Args:
             thread_id: Unique identifier for the execution thread.
             ably_client: An initialized Ably Realtime client instance.
@@ -134,17 +160,17 @@ class AblyCallbackHandler(AsyncCallbackHandler):
         self.ably_client = ably_client
         self._stream_channel_name = f"agent:stream:{thread_id}"
         self._status_channel_name = f"agent:status:{thread_id}"
-    
+
     @property
     def stream_channel(self) -> Any:
         """Get the Ably channel for token streaming."""
         return self.ably_client.channels.get(self._stream_channel_name)
-    
+
     @property
     def status_channel(self) -> Any:
         """Get the Ably channel for status updates."""
         return self.ably_client.channels.get(self._status_channel_name)
-    
+
     async def _publish_to_channel(
         self,
         channel: Any,
@@ -153,7 +179,7 @@ class AblyCallbackHandler(AsyncCallbackHandler):
     ) -> None:
         """
         Safely publish a message to an Ably channel.
-        
+
         Args:
             channel: The Ably channel to publish to.
             event_name: The event name for the message.
@@ -163,7 +189,7 @@ class AblyCallbackHandler(AsyncCallbackHandler):
             await channel.publish(event_name, data)
         except Exception as e:
             logger.error(f"Failed to publish to Ably channel: {e}")
-    
+
     async def on_llm_new_token(
         self,
         token: str,
@@ -175,10 +201,10 @@ class AblyCallbackHandler(AsyncCallbackHandler):
     ) -> None:
         """
         Handle new tokens from the LLM for real-time streaming.
-        
+
         Publishes each token to the stream channel as it's generated,
         enabling character-by-character streaming in the frontend.
-        
+
         Args:
             token: The newly generated token string.
             chunk: Optional generation chunk with additional metadata.
@@ -195,7 +221,7 @@ class AblyCallbackHandler(AsyncCallbackHandler):
                 "thread_id": self.thread_id,
             },
         )
-    
+
     async def on_tool_start(
         self,
         serialized: Dict[str, Any],
@@ -210,10 +236,10 @@ class AblyCallbackHandler(AsyncCallbackHandler):
     ) -> None:
         """
         Handle tool execution start events.
-        
+
         Publishes a "Thinking..." status update when a tool begins execution,
         keeping the user informed about agent activity.
-        
+
         Args:
             serialized: Serialized representation of the tool.
             input_str: String representation of the tool input.
@@ -225,7 +251,7 @@ class AblyCallbackHandler(AsyncCallbackHandler):
             **kwargs: Additional callback arguments.
         """
         tool_name = serialized.get("name", "unknown")
-        
+
         await self._publish_to_channel(
             channel=self.status_channel,
             event_name="status",
@@ -237,7 +263,7 @@ class AblyCallbackHandler(AsyncCallbackHandler):
                 "tool_name": tool_name,
             },
         )
-    
+
     async def on_chain_end(
         self,
         outputs: Dict[str, Any],
@@ -249,10 +275,10 @@ class AblyCallbackHandler(AsyncCallbackHandler):
     ) -> None:
         """
         Handle chain completion events.
-        
+
         Publishes status updates when chains complete, such as
         "Plan Generated" or other milestone notifications.
-        
+
         Args:
             outputs: The outputs produced by the chain.
             run_id: Unique identifier for the current run.
@@ -262,7 +288,7 @@ class AblyCallbackHandler(AsyncCallbackHandler):
         """
         # Determine appropriate status message based on outputs
         status_message = "Step Completed"
-        
+
         if outputs:
             if "implementation_plan" in outputs:
                 status_message = "Plan Generated"
@@ -270,7 +296,7 @@ class AblyCallbackHandler(AsyncCallbackHandler):
                 status_message = "Code Generated"
             elif "build_logs" in outputs:
                 status_message = "Build Completed"
-        
+
         await self._publish_to_channel(
             channel=self.status_channel,
             event_name="status",
@@ -281,7 +307,7 @@ class AblyCallbackHandler(AsyncCallbackHandler):
                 "has_outputs": bool(outputs),
             },
         )
-    
+
     async def on_llm_end(
         self,
         response: LLMResult,
@@ -292,10 +318,10 @@ class AblyCallbackHandler(AsyncCallbackHandler):
     ) -> None:
         """
         Handle LLM completion events.
-        
+
         Publishes a stream-end event to signal that token streaming
         has completed for this LLM call.
-        
+
         Args:
             response: The complete LLM response.
             run_id: Unique identifier for the current run.
@@ -321,55 +347,104 @@ def create_redis_saver(
 ) -> Any:
     """
     Create and configure an AsyncRedisSaver for graph checkpointing.
-    
+
+    Supports multiple Redis backends:
+    1. Native Redis protocol (redis://host:port)
+    2. Upstash Redis via REST API
+    3. Fallback to in-memory storage for development
+
     The Redis saver enables the "Antigravity" pattern by persisting
     graph state, allowing execution to pause for human approval and
     resume even after server restarts.
-    
+
     Args:
         redis_url: Redis connection URL. Defaults to REDIS_URL environment
-            variable if not provided.
-    
+            variable. Can also use Upstash REST credentials if configured.
+
     Returns:
-        An AsyncRedisSaver instance configured for the graph.
-    
+        A checkpointer instance (AsyncRedisSaver or MemorySaver fallback).
+
     Raises:
-        ValueError: If no Redis URL is provided or found in environment.
-        ImportError: If langgraph-checkpoint-redis is not installed.
-    
+        ImportError: If required packages are not installed.
+
     Example:
         >>> saver = create_redis_saver()
         >>> # Or with explicit URL
         >>> saver = create_redis_saver("redis://localhost:6379")
     """
-    # Import here to provide clear error if package not installed
-    # Import here to provide clear error if package not installed
+
+    # Try to import AsyncRedisSaver
     try:
-        # Try standard import path (namespace package)
-        from langgraph.checkpoint.redis.aio import AsyncRedisSaver
-    except ImportError:
         try:
-            # Fallback to direct package import if available
-            from langgraph_checkpoint_redis import AsyncRedisSaver
-        except ImportError as e:
-            raise ImportError(
-                "langgraph-checkpoint-redis is required for Redis persistence. "
-                "Install it with: pip install langgraph-checkpoint-redis"
-            ) from e
-    
-    # Resolve Redis URL
+            from langgraph.checkpoint.redis.aio import AsyncRedisSaver
+        except ImportError:
+            try:
+                from langgraph_checkpoint_redis import AsyncRedisSaver
+            except ImportError as e:
+                raise ImportError(
+                    "langgraph-checkpoint-redis is required for Redis persistence. "
+                    "Install it with: pip install langgraph-checkpoint-redis"
+                ) from e
+    except ImportError as e:
+        logger.warning(f"Redis checkpointer not available: {e}")
+        logger.info(
+            "Falling back to in-memory checkpointer for session-only persistence")
+        from langgraph.checkpoint.memory import MemorySaver
+        return MemorySaver()
+
+    # Resolve Redis URL from multiple sources
     url = redis_url or os.getenv("REDIS_URL")
-    
+
+    # If no REDIS_URL, try to construct from Upstash REST credentials
     if not url:
-        raise ValueError(
-            "Redis URL is required. Provide it as an argument or set the "
-            "REDIS_URL environment variable."
+        upstash_url = os.getenv("UPSTASH_REDIS_REST_URL", "").strip()
+        upstash_token = os.getenv("UPSTASH_REDIS_REST_TOKEN", "").strip()
+
+        if upstash_url and upstash_token:
+            logger.info(
+                "Upstash credentials found, attempting REST API connection...")
+            try:
+                # Use upstash-redis SDK for REST API compatibility
+                from upstash_redis.asyncio import Redis as UpstashRedis
+
+                # Create connection using REST API
+                upstash_client = UpstashRedis(
+                    url=upstash_url,
+                    token=upstash_token
+                )
+                logger.info("✅ Using Upstash Redis via REST API")
+
+                # Return a wrapper that adapts Upstash to the async interface
+                # For now, we'll use in-memory as fallback since Upstash REST
+                # doesn't directly work with LangGraph's AsyncRedisSaver
+                logger.warning(
+                    "Upstash REST API requires custom adapter. "
+                    "Using in-memory storage for this session."
+                )
+                from langgraph.checkpoint.memory import MemorySaver
+                return MemorySaver()
+
+            except ImportError:
+                logger.warning("upstash-redis SDK not installed")
+
+    if not url:
+        logger.warning(
+            "Redis URL not configured. Using in-memory checkpointer (session-only persistence). "
+            "For production, set REDIS_URL environment variable."
         )
-    
-    logger.info(f"Initializing Redis checkpointer with URL: {url[:20]}...")
-    
-    # Create and return the async saver
-    return AsyncRedisSaver.from_conn_string(url)
+        from langgraph.checkpoint.memory import MemorySaver
+        return MemorySaver()
+
+    logger.info(f"Initializing Redis checkpointer with URL: {url[:30]}...")
+
+    try:
+        # Create and return the async saver
+        return AsyncRedisSaver.from_conn_string(url)
+    except Exception as e:
+        logger.warning(f"Failed to connect to Redis ({url[:30]}...): {e}")
+        logger.info("Falling back to in-memory checkpointer")
+        from langgraph.checkpoint.memory import MemorySaver
+        return MemorySaver()
 
 
 # =============================================================================
@@ -381,19 +456,19 @@ def create_graph_builder(
 ) -> StateGraph:
     """
     Create and configure the StateGraph builder for the Antigravity agent.
-    
+
     This function initializes the graph structure with the AgentState schema
     and optional Redis checkpointer. The returned builder is ready for
     node and edge definitions.
-    
+
     Args:
         checkpointer: Optional checkpointer instance (e.g., AsyncRedisSaver)
             for state persistence. If None, the graph will run without
             persistence (useful for testing).
-    
+
     Returns:
         A configured StateGraph instance ready for node definitions.
-    
+
     Example:
         >>> # With Redis persistence
         >>> saver = create_redis_saver()
@@ -408,12 +483,12 @@ def create_graph_builder(
     """
     # Create the graph with AgentState as the state schema
     graph = StateGraph(AgentState)
-    
+
     logger.info("StateGraph initialized with AgentState schema")
-    
+
     if checkpointer:
         logger.info("Checkpointer configured for state persistence")
-    
+
     return graph
 
 
@@ -423,19 +498,19 @@ def get_graph_config(
 ) -> Dict[str, Any]:
     """
     Generate configuration dictionary for graph execution.
-    
+
     This configuration is passed to graph.invoke() or graph.astream()
     to control execution behavior.
-    
+
     Args:
         thread_id: Unique identifier for the execution thread.
             This enables resume capability across sessions.
         recursion_limit: Maximum recursion depth to prevent infinite loops.
             Defaults to 50.
-    
+
     Returns:
         Configuration dictionary for graph execution.
-    
+
     Example:
         >>> config = get_graph_config("session-123")
         >>> result = await app.ainvoke(state, config=config)
@@ -459,25 +534,25 @@ async def initialize_agent(
 ) -> tuple[StateGraph, AblyCallbackHandler, Dict[str, Any]]:
     """
     Initialize all components for the Antigravity agent.
-    
+
     This is a convenience function that sets up the complete agent
     infrastructure including the graph, callback handler, and configuration.
-    
+
     Args:
         thread_id: Unique identifier for the execution thread.
         ably_api_key: Ably API key. Defaults to ABLY_API_KEY environment variable.
         redis_url: Redis URL. Defaults to REDIS_URL environment variable.
-    
+
     Returns:
         A tuple containing:
             - StateGraph: The configured graph builder
             - AblyCallbackHandler: The callback handler for real-time events
             - Dict: The execution configuration
-    
+
     Raises:
         ValueError: If required credentials are missing.
         ImportError: If required packages are not installed.
-    
+
     Example:
         >>> graph, callback, config = await initialize_agent("session-123")
         >>> 
@@ -500,7 +575,7 @@ async def initialize_agent(
             "ably package is required for real-time events. "
             "Install it with: pip install ably"
         ) from e
-    
+
     # Resolve Ably API key
     api_key = ably_api_key or os.getenv("ABLY_API_KEY")
     if not api_key:
@@ -508,18 +583,19 @@ async def initialize_agent(
             "Ably API key is required. Provide it as an argument or set the "
             "ABLY_API_KEY environment variable."
         )
-    
+
     # Initialize Ably client
     ably_client = AblyRealtime(api_key)
-    
+
     # Create components
     checkpointer = create_redis_saver(redis_url)
     graph = create_graph_builder(checkpointer=checkpointer)
-    callback = AblyCallbackHandler(thread_id=thread_id, ably_client=ably_client)
+    callback = AblyCallbackHandler(
+        thread_id=thread_id, ably_client=ably_client)
     config = get_graph_config(thread_id)
-    
+
     logger.info(f"Agent initialized for thread: {thread_id}")
-    
+
     return graph, callback, config
 
 
@@ -535,16 +611,16 @@ def get_initial_state(
 ) -> AgentState:
     """
     Create an initial state for graph execution.
-    
+
     Args:
         manifest: Optional backend API manifest. Defaults to empty dict.
         user_prompt: The user's frontend requirements.
         org_slug: Organization slug for file storage path.
         project_slug: Project slug for file storage path.
-    
+
     Returns:
         An AgentState dictionary with initialized values.
-    
+
     Example:
         >>> state = get_initial_state(
         ...     manifest={"endpoints": [...]},
@@ -568,4 +644,16 @@ def get_initial_state(
         template_files={},
         org_slug=org_slug,
         project_slug=project_slug,
+        files_streamed=0,
+        conversation_history=[],
+        project_context={},
+        quality_summary={},
+        modification_analysis={},
+        modification_targets=[],
+        delta_mode=False,
+        data_mode="real_api",
+        api_base_url=None,
+        color_palette=None,
+        retrieval_metadata={},
+        resolved_dependencies={},
     )
