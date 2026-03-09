@@ -80,4 +80,19 @@
     -webkit-text-fill-color: transparent;
     background-clip: text;
   }
+  .section-gradient {
+    background: linear-gradient(to bottom right, hsl(var(--primary) / 0.05), transparent, hsl(var(--accent) / 0.05));
+  }
+  .hover-lift {
+    @apply transition-all duration-200;
+  }
+  .hover-lift:hover {
+    @apply -translate-y-0.5 shadow-elevated;
+  }
+  .card-interactive {
+    @apply shadow-soft rounded-xl border-border/50 transition-all duration-200;
+  }
+  .card-interactive:hover {
+    @apply shadow-elevated -translate-y-0.5;
+  }
 }

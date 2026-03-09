@@ -42,6 +42,13 @@
       "pitfall": "Next.js 15: params in dynamic routes is a Promise — NEVER write `params: { slug: string }`",
       "fix": "Always use: `params: Promise<{ slug: string }>` and `const { slug } = await params;` inside the async function body",
       "severity": "error"
+    },
+    {
+      "id": "C007",
+      "trigger_keywords": ["globals.css", "global styles", "css import", "layout.tsx", "root layout", "layout"],
+      "pitfall": "Do NOT import CSS as '@/app/globals.css' or './globals.css' from app/ — the file is at styles/globals.css",
+      "fix": "Use: import '@/styles/globals.css' or import '../styles/globals.css' (only in app/layout.tsx)",
+      "severity": "error"
     }
   ]
 }

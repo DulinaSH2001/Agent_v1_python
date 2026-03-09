@@ -94,8 +94,10 @@ Always include a "modify" task for app/page.tsx to replace the placeholder with 
 Always include a "modify" task for lib/data.ts to add project-specific sample data.
 For each task, list any npm packages needed beyond what the template already provides.
 Base template does NOT include: recharts, framer-motion,
-  @tanstack/react-query, axios, zustand, mapbox-gl, react-pdf, react-markdown, socket.io-client, pusher-js.
+  @tanstack/react-query, @tanstack/react-table, axios, zustand, mapbox-gl, react-pdf, react-markdown, socket.io-client, pusher-js.
+Note: For tables, use the pre-built DataTable component (`@/components/data/DataTable`) — do NOT add @tanstack/react-table as a dependency.
 Always list these in "dependencies" when any task file imports them.
+For each task description, include styling notes: layout type (grid/flex/single-column), whether it needs a hero section, card grids, data tables, or forms. This helps the Builder generate polished, modern UI.
 PAYMENT GUARDRAIL: NEVER add @stripe/stripe-js, @stripe/react-stripe-js, or any other
   external payment SDK to "dependencies". Payment pages must use simple HTML forms only.
 ORM GUARDRAIL: NEVER add @prisma/client, prisma, drizzle-orm, typeorm, sequelize, or mongoose

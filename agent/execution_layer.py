@@ -71,6 +71,18 @@ BUILDER_PROMPT = """Generate Next.js 15 TypeScript/TSX code.
 
 Use: App Router (app/), Server Components, Server Actions (lib/actions.ts), Zod, Shadcn UI, sonner.
 Use pre-built components: Sidebar, Header, PageContainer, DataTable, StatCard, EmptyState from @/components/.
+
+Toast/notification guardrail: NEVER use react-hot-toast or react-toastify.
+  - FORBIDDEN: `import { toast } from 'react-hot-toast'`, `import toast from 'react-hot-toast'`, `import { Toaster } from 'react-hot-toast'`
+  - REQUIRED: `import { toast } from 'sonner'` → `toast.success('...')` or `toast.error('...')`
+
+Table guardrail: NEVER import @tanstack/react-table directly in page/component files.
+  - FORBIDDEN: `import { useReactTable } from '@tanstack/react-table'`, `import { getCoreRowModel } from '@tanstack/react-table'`
+  - REQUIRED: `import { DataTable } from '@/components/data/DataTable'` with `TableColumn<T>[]` config from `@/types`
+
+CSS import guardrail: The global CSS file lives at styles/globals.css (NOT inside app/).
+  - FORBIDDEN: `import '@/app/globals.css'`, `import './globals.css'` (from any app/ file)
+  - REQUIRED: Only app/layout.tsx imports CSS as `import '../styles/globals.css'` or `import '@/styles/globals.css'`. No other file should import globals.css.
 TypeScript strict mode. No 'any' types. Responsive Tailwind CSS.
 For App Router dynamic routes (app/**/[param]/**), use Next.js 15 async params shape:
   - REQUIRED: `params: Promise<{ param: string }>` and `const { param } = await params`
@@ -137,7 +149,70 @@ export default function PaymentForm() {
 }
 ```
 
-Styling: Use shadow-soft/shadow-elevated for depth. Cards: hover:shadow-elevated hover:-translate-y-0.5 transition-all duration-200. Buttons: hover:shadow-glow hover:-translate-y-px transition-all duration-150. Hero headings: font-bold tracking-tight text-5xl (use text-gradient class for color). Gradient CTAs: gradient-primary class. Nav/headers: sticky top-0 z-50 glass class for blur. Page content: animate-fade-in on main wrapper. animate-slide-up on cards when page loads.
+## Styling Requirements (CRITICAL — follow strictly)
+
+Layout:
+- Every page with sidebar: use CSS Grid `grid-cols-[auto_1fr]` or flex layout
+- Consistent spacing: `p-6 lg:p-8` on page containers, `space-y-8` between sections
+- Max-width content: `max-w-7xl mx-auto` for non-sidebar pages
+
+Cards:
+- Always use `<Card>` from shadcn with className `card-interactive` (shorthand for shadow-soft hover:shadow-elevated hover:-translate-y-0.5 transition-all duration-200 rounded-xl border-border/50)
+- Card headers: `CardTitle` as `text-lg font-semibold`, `CardDescription` as `text-sm text-muted-foreground`
+- Card grids: `grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6`
+
+Buttons:
+- Primary: `<Button>` default variant — add `hover:shadow-glow hover:-translate-y-px transition-all duration-150`
+- Secondary: `<Button variant="outline">` with `hover:bg-accent`
+- Icon buttons: `<Button variant="ghost" size="icon">`
+
+Typography:
+- Hero headings: `text-4xl sm:text-5xl font-bold tracking-tight` with `text-gradient` class
+- Section headings: `text-2xl font-semibold tracking-tight`
+- Body text: `text-muted-foreground leading-relaxed`
+
+Animations & Transitions:
+- Page wrapper: `animate-fade-in` on main `<div>`
+- Cards in grids: `animate-slide-up` with staggered `style={{ animationDelay: \`${index * 100}ms\` }}`
+- Nav/header: `sticky top-0 z-50` with `glass` class for frosted blur
+- All interactive elements: `transition-all duration-200`
+
+Backgrounds & Depth:
+- Hero sections: `bg-gradient-to-br from-primary/5 via-background to-accent/5` or `section-gradient` class
+- Alternating sections: alternate `bg-background` and `bg-muted/30`
+
+Color Usage:
+- Semantic tokens: `text-primary`, `bg-primary`, `text-muted-foreground`, `bg-muted`
+- Accent highlights: `text-primary` for links, active states, important numbers
+- Badges: use shadcn `<Badge>` variants (default, secondary, destructive, outline, success, warning)
+- Borders: `border-border` default, `border-primary/20` for accent borders
+
+Forms:
+- Wrap in `<Card>` with padding. Label + Input with `space-y-2` per field, `space-y-4` between fields
+- Error states: `text-destructive text-sm` below inputs
+- Submit: `w-full` on mobile
+
+Canonical page composition example:
+```tsx
+export default function Page() {
+  return (
+    <div className="animate-fade-in space-y-8 p-6 lg:p-8">
+      <section className="space-y-4">
+        <h1 className="text-4xl sm:text-5xl font-bold tracking-tight text-gradient">Title</h1>
+        <p className="text-lg text-muted-foreground max-w-2xl leading-relaxed">Description</p>
+      </section>
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+        {items.map((item, i) => (
+          <Card key={item.id} className="card-interactive animate-slide-up" style={{ animationDelay: \`${i * 100}ms\` }}>
+            <CardHeader><CardTitle className="text-lg font-semibold">{item.title}</CardTitle></CardHeader>
+            <CardContent><Badge variant="secondary">{item.status}</Badge></CardContent>
+          </Card>
+        ))}
+      </div>
+    </div>
+  );
+}
+```
 
 Return ONLY code. No markdown, no explanations.
 """
@@ -254,6 +329,7 @@ TEMPLATE_INJECTION_MAP: dict = {
     "sidebar": "components/layout/Sidebar.tsx",
     "header bar": "components/layout/Header.tsx",
     "top header": "components/layout/Header.tsx",
+    "header": "components/layout/Header.tsx",
     "page container": "components/layout/PageContainer.tsx",
     "data table": "components/data/DataTable.tsx",
     "datatable": "components/data/DataTable.tsx",
@@ -299,8 +375,8 @@ def _get_relevant_corrections(description: str) -> str:
         if any(kw in desc_lower for kw in c.get("trigger_keywords", []))
     ]
 
-    # Only inject if 2+ corrections are relevant (reduces noise)
-    if len(relevant) < 2:
+    # Inject if any corrections are relevant
+    if len(relevant) < 1:
         return ""
 
     lines = [
@@ -1987,8 +2063,8 @@ Props for imported components should match the signatures described in the Avail
 
                 # Inline quality auto-fix: run rule checks and apply fixes before publish
                 try:
-                    from agent.code_quality import CodeQualityReviewer
-                    reviewer = CodeQualityReviewer()
+                    from agent.code_quality import CodeReviewer
+                    reviewer = CodeReviewer()
                     review = reviewer.review_file(file_path, code, file_system)
                     if review.fixed_content and review.fixed_content != code:
                         fixed_count = sum(

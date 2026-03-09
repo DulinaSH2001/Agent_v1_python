@@ -5,23 +5,17 @@
  * Replace or extend these with your application's real data.
  */
 
-import type { NavLink } from "@/types";
+import type { NavLink, SocialLink } from "@/types";
+
+// Re-export SocialLink for backward compatibility
+export type { SocialLink } from "@/types";
 
 // ─── Navigation ───────────────────────────────────────────────────────────────
 
 /** Top-level navigation links — used by Sidebar, Header, and Footer */
 export const navLinks: NavLink[] = [
-    { href: "/", label: "Home", icon: "Home" },
+    { href: "/", label: "Home", icon: "home" },
 ];
-
-// ─── Social Links ─────────────────────────────────────────────────────────────
-
-export interface SocialLink {
-    href: string;
-    label: string;
-    /** lucide icon name */
-    icon: string;
-}
 
 /** Social / external links — used by Footer */
 export const socialLinks: SocialLink[] = [

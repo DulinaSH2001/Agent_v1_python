@@ -204,6 +204,25 @@ WRONG_SHADCN_IMPORTS = [
     (re.compile(r"from\s+['\"]@radix-ui/react-(\w+)['\"]", re.MULTILINE), None),
 ]
 
+# Wrong toast library imports — should use sonner
+WRONG_TOAST_IMPORT_RE = re.compile(
+    r"(from\s+['\"])(react-hot-toast|react-toastify)(['\"])", re.MULTILINE
+)
+# Also catch: import { Toaster } from 'react-hot-toast'
+WRONG_TOAST_TOASTER_RE = re.compile(
+    r"import\s+\{[^}]*Toaster[^}]*\}\s+from\s+['\"]react-hot-toast['\"]", re.MULTILINE
+)
+
+# Wrong CSS import paths — globals.css is at styles/globals.css, not app/globals.css
+WRONG_CSS_IMPORT_RE = re.compile(
+    r"(import\s+['\"])(@/app/globals\.css|\.\/globals\.css)(['\"])", re.MULTILINE
+)
+
+# Direct @tanstack/react-table imports — should use DataTable wrapper
+DIRECT_TABLE_LIB_RE = re.compile(
+    r"from\s+['\"]@tanstack/react-table['\"]", re.MULTILINE
+)
+
 # Barrel imports known to be large
 LARGE_BARREL_IMPORTS = [
     re.compile(r"from\s+['\"]lodash['\"]", re.MULTILINE),
@@ -260,6 +279,15 @@ class CodeReviewer:
         result.issues.extend(issues)
 
         issues, working_content = self.check_shadcn_component_availability(working_content, file_path)
+        result.issues.extend(issues)
+
+        issues, working_content = self.check_wrong_toast_import(working_content)
+        result.issues.extend(issues)
+
+        issues, working_content = self.check_wrong_css_import(working_content, file_path)
+        result.issues.extend(issues)
+
+        issues = self.check_direct_table_import(working_content)
         result.issues.extend(issues)
 
         issues = self.check_bundle_optimization(working_content)
@@ -427,6 +455,76 @@ class CodeReviewer:
                     ))
 
         return issues, content
+
+    # -------------------------------------------------------------------------
+    # Check: wrong toast library (react-hot-toast → sonner)
+    # -------------------------------------------------------------------------
+    def check_wrong_toast_import(
+        self, content: str
+    ) -> Tuple[List[QualityIssue], str]:
+        issues: List[QualityIssue] = []
+
+        if WRONG_TOAST_IMPORT_RE.search(content):
+            issue = QualityIssue(
+                rule="wrong_toast_library",
+                severity="error",
+                line=None,
+                message="Using react-hot-toast/react-toastify — must use 'sonner' instead. Auto-fixing import.",
+                auto_fixable=True,
+            )
+            # Replace: from 'react-hot-toast' → from 'sonner'
+            content = WRONG_TOAST_IMPORT_RE.sub(r"\1sonner\3", content)
+            # Remove Toaster imports from react-hot-toast (sonner's Toaster is in layout.tsx)
+            content = WRONG_TOAST_TOASTER_RE.sub("", content)
+            issue.fix_applied = True
+            issues.append(issue)
+
+        return issues, content
+
+    # -------------------------------------------------------------------------
+    # Check: wrong CSS import path (@/app/globals.css → @/styles/globals.css)
+    # -------------------------------------------------------------------------
+    def check_wrong_css_import(
+        self, content: str, file_path: str
+    ) -> Tuple[List[QualityIssue], str]:
+        issues: List[QualityIssue] = []
+
+        if WRONG_CSS_IMPORT_RE.search(content):
+            issue = QualityIssue(
+                rule="wrong_css_import_path",
+                severity="error",
+                line=None,
+                message="CSS import path '@/app/globals.css' is wrong — auto-fixing to '@/styles/globals.css'",
+                auto_fixable=True,
+            )
+            # Fix to the correct path
+            if "app/" in file_path:
+                content = WRONG_CSS_IMPORT_RE.sub(r"\g<1>../styles/globals.css\3", content)
+            else:
+                content = WRONG_CSS_IMPORT_RE.sub(r"\g<1>@/styles/globals.css\3", content)
+            issue.fix_applied = True
+            issues.append(issue)
+
+        return issues, content
+
+    # -------------------------------------------------------------------------
+    # Check: direct @tanstack/react-table import (should use DataTable wrapper)
+    # -------------------------------------------------------------------------
+    def check_direct_table_import(
+        self, content: str
+    ) -> List[QualityIssue]:
+        issues: List[QualityIssue] = []
+
+        if DIRECT_TABLE_LIB_RE.search(content):
+            issues.append(QualityIssue(
+                rule="direct_table_library_import",
+                severity="warning",
+                line=None,
+                message="Direct @tanstack/react-table import detected — use DataTable from '@/components/data/DataTable' instead",
+                auto_fixable=False,
+            ))
+
+        return issues
 
     # -------------------------------------------------------------------------
     # Check: bundle optimization (large barrel imports)

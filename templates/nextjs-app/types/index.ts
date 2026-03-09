@@ -93,6 +93,15 @@ export interface TableColumn<T> {
     sortable?: boolean;
 }
 
+// ─── Social Links ────────────────────────────────────────────────────────────
+
+export interface SocialLink {
+    href: string;
+    label: string;
+    /** lucide icon name */
+    icon: string;
+}
+
 // ─── Select / Dropdowns ───────────────────────────────────────────────────────
 
 export interface SelectOption<T = string> {

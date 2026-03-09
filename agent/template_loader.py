@@ -218,6 +218,12 @@ Only generate files that are:
 
 Use these import patterns:
 - Components: import { Button } from "@/components/ui/button"
+- Layout: import { Header } from "@/components/layout/Header"
+- Layout: import { Sidebar } from "@/components/layout/Sidebar"
+- Layout: import { PageContainer } from "@/components/layout/PageContainer"
+- Data: import { DataTable } from "@/components/data/DataTable"
+- Data: import { StatCard } from "@/components/data/StatCard"
+- Data: import { EmptyState } from "@/components/data/EmptyState"
 - Utils: import { cn } from "@/lib/utils"
 - Actions: import { serverAction } from "@/lib/actions"
 - Types: import { User } from "@/types"
