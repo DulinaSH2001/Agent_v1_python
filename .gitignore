@@ -19,7 +19,7 @@ node_modules/
 vendor/
 venv/
 .venv/
-env/
+.env
 
 # Log files
 *.log
