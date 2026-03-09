@@ -3,11 +3,9 @@
 # Set this as the startup command in Azure App Service:
 #   /home/site/wwwroot/startup.sh
 
-exec gunicorn \
-    -w 4 \
-    -k uvicorn.workers.UvicornWorker \
+exec uvicorn \
     api.webhook:app \
-    --bind 0.0.0.0:8000 \
-    --timeout 600 \
-    --access-logfile - \
-    --error-logfile -
+    --host 0.0.0.0 \
+    --port 8000 \
+    --timeout-keep-alive 1200 \
+    --log-level info
