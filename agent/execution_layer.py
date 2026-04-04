@@ -19,6 +19,7 @@ import json
 import logging
 import os
 import re
+import shutil
 from typing import Any, Dict, List, Optional, Tuple
 
 from dotenv import load_dotenv
@@ -44,14 +45,29 @@ logger = logging.getLogger(__name__)
 # AblyRest uses plain HTTPS and is safe to reuse across async tasks.
 # ---------------------------------------------------------------------------
 _ably_rest: Optional[Any] = None
+_ably_config_warning_logged = False
+
+
+def _looks_like_ably_api_key(api_key: str) -> bool:
+    """Return True when the value matches the expected Ably API key shape."""
+    key_name, separator, key_secret = api_key.partition(":")
+    return bool(separator and key_name and key_secret and "." in key_name)
 
 
 def _get_ably_rest_channel(channel_name: str) -> Optional[Any]:
     """Return an Ably REST channel, lazily initializing the singleton."""
-    global _ably_rest
+    global _ably_rest, _ably_config_warning_logged
     if _ably_rest is None:
         api_key = os.getenv("ABLY_API_KEY")
         if not api_key:
+            return None
+        if not _looks_like_ably_api_key(api_key):
+            if not _ably_config_warning_logged:
+                logger.warning(
+                    "ABLY_API_KEY does not match the expected Ably API key "
+                    "format '<appId>.<keyId>:<secret>'; skipping Ably publish."
+                )
+                _ably_config_warning_logged = True
             return None
         try:
             from ably import AblyRest
@@ -901,6 +917,13 @@ class MCPWrapper:
                                 config["command"] = parts[0]
                                 config["args"] = parts[1:]
 
+                            if "command" in config and shutil.which(config["command"]) is None:
+                                logger.warning(
+                                    f"Skipping MCP server '{name}': command "
+                                    f"'{config['command']}' is not available in the container."
+                                )
+                                continue
+
                             # Ensure transport is set (default to stdio if command is present)
                             if "transport" not in config:
                                 if "command" in config:
@@ -927,11 +950,17 @@ class MCPWrapper:
                             f"Connecting to local MCP server via Stdio: {mcp_command}")
                         # Split command if it's a string
                         cmd_parts = mcp_command.split()
-                        servers["docs_server"] = {
-                            "command": cmd_parts[0],
-                            "args": cmd_parts[1:],
-                            "transport": "stdio",
-                        }
+                        if shutil.which(cmd_parts[0]) is None:
+                            logger.warning(
+                                f"Skipping MCP docs server: command '{cmd_parts[0]}' "
+                                "is not available in the container."
+                            )
+                        else:
+                            servers["docs_server"] = {
+                                "command": cmd_parts[0],
+                                "args": cmd_parts[1:],
+                                "transport": "stdio",
+                            }
 
                 if servers:
                     self.client = MultiServerMCPClient(servers)

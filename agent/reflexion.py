@@ -39,6 +39,12 @@ load_dotenv()
 logger = logging.getLogger(__name__)
 
 
+def _looks_like_ably_api_key(api_key: str) -> bool:
+    """Return True when the value matches the expected Ably API key shape."""
+    key_name, separator, key_secret = api_key.partition(":")
+    return bool(separator and key_name and key_secret and "." in key_name)
+
+
 # =============================================================================
 # Constants
 # =============================================================================
@@ -520,35 +526,30 @@ async def publish_to_ably(
         True if successful, False otherwise.
     """
     try:
-        from ably import AblyRealtime
-        import ssl
+        from ably import AblyRest
 
         api_key = os.getenv("ABLY_API_KEY")
         if not api_key:
             logger.warning("ABLY_API_KEY not set, skipping publish")
             return False
+        if not _looks_like_ably_api_key(api_key):
+            logger.warning(
+                "ABLY_API_KEY does not match the expected format "
+                "'<appId>.<keyId>:<secret>'; skipping publish"
+            )
+            return False
 
-        # Configure SSL context to handle macOS certificate issues
-        try:
-            import certifi
-            ssl_context = ssl.create_default_context(cafile=certifi.where())
-            ssl_context.check_hostname = True
-            ssl_context.verify_mode = ssl.CERT_REQUIRED
-        except ImportError:
-            # Fallback if certifi not available
-            ssl_context = ssl.create_default_context()
-
-        # Initialize client with SSL configuration
-        client = AblyRealtime(
+        client = AblyRest(
             api_key,
             use_binary_protocol=False,
             log_level="WARNING",
-            _transport_kwargs={"verify": True}  # Enable SSL verification
         )
 
         channel = client.channels.get(channel_name)
-        await channel.publish("message", data)
-        await client.close()
+        try:
+            await channel.publish("message", data)
+        except TypeError:
+            channel.publish("message", data)
 
         logger.info(f"Published to Ably channel {channel_name}")
         return True

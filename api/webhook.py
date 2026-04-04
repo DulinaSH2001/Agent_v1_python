@@ -45,12 +45,19 @@ _redis_checkpointer: Optional[Any] = None
 
 # Ably REST singleton
 _ably_rest_client: Optional[AblyRest] = None
+_ably_config_warning_logged = False
+
+
+def _looks_like_ably_api_key(api_key: str) -> bool:
+    """Return True when the value matches the expected Ably API key shape."""
+    key_name, separator, key_secret = api_key.partition(":")
+    return bool(separator and key_name and key_secret and "." in key_name)
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Pre-warm expensive singletons at startup — not per request."""
-    global _redis_checkpointer, _ably_rest_client
+    global _redis_checkpointer, _ably_rest_client, _ably_config_warning_logged
 
     # Pre-load template files (blocking I/O done once here, not on first request)
     try:
@@ -75,13 +82,21 @@ async def lifespan(app: FastAPI):
     # Ably REST singleton
     api_key = os.getenv("ABLY_API_KEY")
     if api_key:
-        try:
-            _ably_rest_client = AblyRest(
-                api_key, use_binary_protocol=False, log_level="WARNING"
-            )
-            logger.info("lifespan: Ably REST client ready")
-        except Exception as exc:
-            logger.warning(f"lifespan: Ably init skipped — {exc}")
+        if not _looks_like_ably_api_key(api_key):
+            if not _ably_config_warning_logged:
+                logger.warning(
+                    "lifespan: ABLY_API_KEY does not match the expected "
+                    "format '<appId>.<keyId>:<secret>'; Ably publish disabled"
+                )
+                _ably_config_warning_logged = True
+        else:
+            try:
+                _ably_rest_client = AblyRest(
+                    api_key, use_binary_protocol=False, log_level="WARNING"
+                )
+                logger.info("lifespan: Ably REST client ready")
+            except Exception as exc:
+                logger.warning(f"lifespan: Ably init skipped — {exc}")
 
     yield  # server is live
     logger.info("lifespan: shutdown")
@@ -249,13 +264,21 @@ class FilesResponse(BaseModel):
 
 def get_ably_client() -> Optional[AblyRest]:
     """Return the Ably REST singleton, initializing on first call."""
-    global _ably_rest_client
+    global _ably_rest_client, _ably_config_warning_logged
     if _ably_rest_client is not None:
         return _ably_rest_client
 
     api_key = os.getenv("ABLY_API_KEY")
     if not api_key:
         logger.warning("ABLY_API_KEY not configured")
+        return None
+    if not _looks_like_ably_api_key(api_key):
+        if not _ably_config_warning_logged:
+            logger.warning(
+                "ABLY_API_KEY does not match the expected format "
+                "'<appId>.<keyId>:<secret>'; skipping Ably publish"
+            )
+            _ably_config_warning_logged = True
         return None
 
     try:
