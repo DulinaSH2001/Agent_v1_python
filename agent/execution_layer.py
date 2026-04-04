@@ -131,9 +131,9 @@ import { processPayment } from '@/lib/actions';
 
 const schema = z.object({
   name: z.string().min(2),
-  cardNumber: z.string().regex(/^\d{16}$/, 'Must be 16 digits'),
-  expiry: z.string().regex(/^(0[1-9]|1[0-2])\/\d{2}$/, 'MM/YY'),
-  cvv: z.string().regex(/^\d{3,4}$/),
+  cardNumber: z.string().regex(/^\\d{16}$/, 'Must be 16 digits'),
+  expiry: z.string().regex(/^(0[1-9]|1[0-2])\\/\\d{2}$/, 'MM/YY'),
+  cvv: z.string().regex(/^\\d{3,4}$/),
 });
 
 export default function PaymentForm() {
@@ -173,7 +173,7 @@ Typography:
 
 Animations & Transitions:
 - Page wrapper: `animate-fade-in` on main `<div>`
-- Cards in grids: `animate-slide-up` with staggered `style={{ animationDelay: \`${index * 100}ms\` }}`
+- Cards in grids: `animate-slide-up` with staggered `style={{ animationDelay: `${index * 100}ms` }}`
 - Nav/header: `sticky top-0 z-50` with `glass` class for frosted blur
 - All interactive elements: `transition-all duration-200`
 
@@ -203,7 +203,7 @@ export default function Page() {
       </section>
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
         {items.map((item, i) => (
-          <Card key={item.id} className="card-interactive animate-slide-up" style={{ animationDelay: \`${i * 100}ms\` }}>
+          <Card key={item.id} className="card-interactive animate-slide-up" style={{ animationDelay: `${i * 100}ms` }}>
             <CardHeader><CardTitle className="text-lg font-semibold">{item.title}</CardTitle></CardHeader>
             <CardContent><Badge variant="secondary">{item.status}</Badge></CardContent>
           </Card>
@@ -863,9 +863,24 @@ class MCPWrapper:
         if self._initialized:
             return
 
-        mcp_servers_config_file = os.path.join(os.path.dirname(__file__), "..", "mcp_servers_config.json")
+        mcp_servers_config_file = os.path.join(
+            os.path.dirname(__file__), "..", "mcp_servers_config.json"
+        )
+        mcp_servers_config = os.getenv("MCP_SERVERS_CONFIG")
         mcp_url = os.getenv("MCP_DOCS_SERVER_URL")
-        if os.path.exists(mcp_servers_config_file) or mcp_url or mcp_command:
+        mcp_command = os.getenv("MCP_DOCS_SERVER_COMMAND")
+
+        if not mcp_servers_config and os.path.exists(mcp_servers_config_file):
+            try:
+                with open(mcp_servers_config_file, "r", encoding="utf-8") as file:
+                    mcp_servers_config = file.read()
+                logger.info(
+                    f"Loaded MCP server config from {mcp_servers_config_file}"
+                )
+            except OSError as e:
+                logger.warning(
+                    f"Failed to read MCP server config file {mcp_servers_config_file}: {e}"
+                )
 
         if mcp_servers_config or mcp_url or mcp_command:
             try:
