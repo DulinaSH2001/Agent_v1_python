@@ -13,10 +13,12 @@ from api.webhook import app  # noqa: F401
 
 if __name__ == "__main__":
     import uvicorn
+    import os
 
     uvicorn.run(
         "api.webhook:app",
         host="0.0.0.0",
-        port=8001,
-        reload=True,
+        port=int(os.environ.get("PORT", 8001)),
+        reload=os.environ.get("RELOAD", "false").lower(
+        ) == "true",  # Disable reload by default
     )

@@ -863,9 +863,9 @@ class MCPWrapper:
         if self._initialized:
             return
 
-        mcp_servers_config = os.getenv("MCP_SERVERS_CONFIG")
+        mcp_servers_config_file = os.path.join(os.path.dirname(__file__), "..", "mcp_servers_config.json")
         mcp_url = os.getenv("MCP_DOCS_SERVER_URL")
-        mcp_command = os.getenv("MCP_DOCS_SERVER_COMMAND")
+        if os.path.exists(mcp_servers_config_file) or mcp_url or mcp_command:
 
         if mcp_servers_config or mcp_url or mcp_command:
             try:
