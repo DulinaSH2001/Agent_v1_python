@@ -83,7 +83,10 @@ class ConversationMemory:
             logger.error("aiohttp not installed, cannot load history")
             return []
         except Exception as e:
-            logger.error(f"Failed to load history for job {job_id}: {e}")
+            logger.error(
+                f"Failed to load history for job {job_id}: {type(e).__name__}: {e!r} "
+                f"(endpoint={self.backend_url}/api/v1/generate/agents/{job_id}/context)"
+            )
             return []
 
     async def load_project_context(
@@ -134,7 +137,10 @@ class ConversationMemory:
             logger.error("aiohttp not installed, cannot load project context")
             return {}
         except Exception as e:
-            logger.error(f"Failed to load project context: {e}")
+            logger.error(
+                f"Failed to load project context: {type(e).__name__}: {e!r} "
+                f"(endpoint={self.backend_url}/api/v1/generate/projects/{org_slug}/{project_slug}/generation-history)"
+            )
             return {}
 
     async def summarize_context(
