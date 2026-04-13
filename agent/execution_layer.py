@@ -96,6 +96,14 @@ Table guardrail: NEVER import @tanstack/react-table directly in page/component f
   - FORBIDDEN: `import { useReactTable } from '@tanstack/react-table'`, `import { getCoreRowModel } from '@tanstack/react-table'`
   - REQUIRED: `import { DataTable } from '@/components/data/DataTable'` with `TableColumn<T>[]` config from `@/types`
 
+Template contract guardrails:
+  - `Sidebar` accepts `navLinks`, NOT `links`.
+  - REQUIRED: `<Sidebar navLinks={navLinks} />`
+  - FORBIDDEN: `<Sidebar links={navLinks} />`
+  - `lib/data.ts` MUST continue exporting both `navLinks` and `socialLinks` even after adding project-specific sample data.
+  - FORBIDDEN: deleting, renaming, or replacing those exports with differently named constants if template components still import them.
+  - If you extend `lib/data.ts`, append project-specific exports and preserve existing template exports.
+
 CSS import guardrail: The global CSS file lives at styles/globals.css (NOT inside app/).
   - FORBIDDEN: `import '@/app/globals.css'`, `import './globals.css'` (from any app/ file)
   - REQUIRED: Only app/layout.tsx imports CSS as `import '../styles/globals.css'` or `import '@/styles/globals.css'`. No other file should import globals.css.

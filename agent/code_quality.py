@@ -229,6 +229,10 @@ LARGE_BARREL_IMPORTS = [
     re.compile(r"from\s+['\"]date-fns['\"]", re.MULTILINE),
 ]
 
+SIDEBAR_LINKS_PROP_RE = re.compile(r"<Sidebar(?P<before>[^>]*?)\slinks=", re.MULTILINE)
+DATA_NAV_LINKS_EXPORT_RE = re.compile(r"export\s+const\s+navLinks\b", re.MULTILINE)
+DATA_SOCIAL_LINKS_EXPORT_RE = re.compile(r"export\s+const\s+socialLinks\b", re.MULTILINE)
+
 # HTML nesting violations: tags that must NOT contain block elements
 NESTING_VIOLATIONS = [
     (re.compile(r'<p\b[^>]*>.*?<div\b', re.DOTALL | re.IGNORECASE), "<div> inside <p>"),
@@ -309,6 +313,12 @@ class CodeReviewer:
         issues, working_content = self.check_dynamic_route_params(working_content, file_path)
         result.issues.extend(issues)
 
+        issues, working_content = self.check_sidebar_prop_contract(working_content, file_path)
+        result.issues.extend(issues)
+
+        issues, working_content = self.check_required_data_exports(working_content, file_path)
+        result.issues.extend(issues)
+
         # Recalculate counts
         result.error_count = sum(1 for i in result.issues if i.severity == "error")
         result.warning_count = sum(1 for i in result.issues if i.severity == "warning")
@@ -318,6 +328,81 @@ class CodeReviewer:
             result.fixed_content = working_content
 
         return result
+
+    # -------------------------------------------------------------------------
+    # Check: Sidebar prop contract (`navLinks`, never `links`)
+    # -------------------------------------------------------------------------
+    def check_sidebar_prop_contract(
+        self, content: str, file_path: str
+    ) -> Tuple[List[QualityIssue], str]:
+        issues: List[QualityIssue] = []
+
+        if "Sidebar" not in content or "links=" not in content:
+            return issues, content
+
+        new_content, subs = SIDEBAR_LINKS_PROP_RE.subn(r"<Sidebar\g<before> navLinks=", content)
+        if not subs:
+            return issues, content
+
+        issues.append(QualityIssue(
+            rule="sidebar_wrong_prop_name",
+            severity="error",
+            line=None,
+            message=(
+                f"File '{file_path}' passes `links` to Sidebar, but the template Sidebar prop is `navLinks`. "
+                "Auto-fixed to `navLinks`."
+            ),
+            auto_fixable=True,
+            fix_applied=True,
+        ))
+        return issues, new_content
+
+    # -------------------------------------------------------------------------
+    # Check: required template exports in lib/data.ts
+    # -------------------------------------------------------------------------
+    def check_required_data_exports(
+        self, content: str, file_path: str
+    ) -> Tuple[List[QualityIssue], str]:
+        issues: List[QualityIssue] = []
+
+        if file_path != "lib/data.ts":
+            return issues, content
+
+        working = content.rstrip() + "\n"
+
+        if not DATA_NAV_LINKS_EXPORT_RE.search(working):
+            issues.append(QualityIssue(
+                rule="missing_navlinks_export",
+                severity="error",
+                line=None,
+                message="`lib/data.ts` must export `navLinks` for template layout components. Auto-fixed by restoring it.",
+                auto_fixable=True,
+                fix_applied=True,
+            ))
+            working += (
+                "\nexport const navLinks: NavLink[] = [\n"
+                '    { href: "/", label: "Home", icon: "home" },\n'
+                "];\n"
+            )
+
+        if not DATA_SOCIAL_LINKS_EXPORT_RE.search(working):
+            issues.append(QualityIssue(
+                rule="missing_sociallinks_export",
+                severity="error",
+                line=None,
+                message="`lib/data.ts` must export `socialLinks` for the template Footer. Auto-fixed by restoring it.",
+                auto_fixable=True,
+                fix_applied=True,
+            ))
+            working += (
+                "\nexport const socialLinks: SocialLink[] = [\n"
+                '    { href: "https://github.com", label: "GitHub", icon: "Github" },\n'
+                '    { href: "https://twitter.com", label: "Twitter", icon: "Twitter" },\n'
+                '    { href: "https://linkedin.com", label: "LinkedIn", icon: "Linkedin" },\n'
+                "];\n"
+            )
+
+        return issues, working
 
     # -------------------------------------------------------------------------
     # Check: missing 'use client' on components using hooks

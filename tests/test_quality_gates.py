@@ -155,3 +155,36 @@ class TestMissingReturnType:
         result = reviewer.review_file("lib/data.ts", content)
         missing_rt = [i for i in result.issues if i.rule == "missing_return_type"]
         assert len(missing_rt) == 0
+
+
+class TestTemplateContractGuards:
+    """Template-specific guardrails for generated Next.js apps."""
+
+    def test_sidebar_links_prop_is_auto_fixed(self):
+        reviewer = CodeReviewer()
+        content = '''import { Sidebar } from "@/components/layout/Sidebar"
+
+export default function DashboardLayout({ children }: { children: React.ReactNode }) {
+    return <Sidebar links={navLinks} />
+}
+'''
+        result = reviewer.review_file("app/dashboard/layout.tsx", content)
+        sidebar_issues = [i for i in result.issues if i.rule == "sidebar_wrong_prop_name"]
+        assert len(sidebar_issues) == 1
+        assert result.fixed_content is not None
+        assert "navLinks={navLinks}" in result.fixed_content
+        assert "links={navLinks}" not in result.fixed_content
+
+    def test_missing_template_data_exports_are_restored(self):
+        reviewer = CodeReviewer()
+        content = '''import type { NavLink, SocialLink } from "@/types"
+
+export const products = [{ id: "1", name: "Widget" }]
+'''
+        result = reviewer.review_file("lib/data.ts", content)
+        rules = {issue.rule for issue in result.issues}
+        assert "missing_navlinks_export" in rules
+        assert "missing_sociallinks_export" in rules
+        assert result.fixed_content is not None
+        assert "export const navLinks" in result.fixed_content
+        assert "export const socialLinks" in result.fixed_content
