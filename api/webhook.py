@@ -1420,19 +1420,11 @@ async def run_build_fix_task(
             )
 
             # Call LLM to generate fix plan
-            from langchain_openai import ChatOpenAI
+            from agent.execution_layer import get_generation_llm
             from langchain_core.messages import SystemMessage, HumanMessage
             import json
 
-            llm = ChatOpenAI(
-                model=os.getenv("AZURE_OPENAI_DEPLOYMENT", "gpt-4o"),
-                api_key=os.getenv("AZURE_OPENAI_API_KEY"),
-                azure_endpoint=os.getenv("AZURE_OPENAI_ENDPOINT"),
-                api_version=os.getenv(
-                    "AZURE_OPENAI_API_VERSION", "2024-12-01-preview"),
-                temperature=0.2,
-                max_tokens=4096,
-            )
+            llm = get_generation_llm(temperature=0.2, streaming=False)
 
             messages = [
                 SystemMessage(content=DEBUGGER_PROMPT),
