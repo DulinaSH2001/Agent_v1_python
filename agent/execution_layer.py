@@ -1585,6 +1585,8 @@ async def stream_file_to_backend(
             "Content-Type": "application/json",
         }
 
+        logger.debug(f"Streaming file to {endpoint} ({org_slug}/{project_slug}/{file_path})")
+
         async with aiohttp.ClientSession() as session:
             async with session.post(endpoint, json=payload, headers=headers, timeout=30) as response:
                 if response.status == 200:
@@ -1593,14 +1595,17 @@ async def stream_file_to_backend(
                 else:
                     text = await response.text()
                     logger.error(
-                        f"Failed to stream {file_path}: status {response.status} - {text}")
+                        f"Failed to stream {file_path}: status {response.status}, "
+                        f"endpoint={endpoint}, body={text[:200]}")
                     return False
 
     except ImportError:
         logger.error("aiohttp not installed, cannot stream file")
         return False
     except Exception as e:
-        logger.error(f"Failed to stream file {file_path}: {e}")
+        logger.error(
+            f"Failed to stream file {file_path}: {type(e).__name__}: {e!r}, "
+            f"BACKEND_URL={backend_url}")
         return False
 
 
@@ -2604,6 +2609,8 @@ async def persistence_node(
             "Content-Type": "application/json",
         }
 
+        logger.info(f"persistence_node: POSTing to {endpoint} for {org_slug}/{project_slug}")
+
         async with aiohttp.ClientSession() as session:
             async with session.post(endpoint, json=payload, headers=headers, timeout=120) as response:
                 if response.status == 200:
@@ -2628,8 +2635,11 @@ async def persistence_node(
                     return {"build_ready": uploaded > 0, "build_logs": build_logs}
                 else:
                     text = await response.text()
-                    error_msg = f"Backend upload failed with status {response.status}: {text}"
-                    logger.error(error_msg)
+                    error_msg = (
+                        f"Backend upload failed with status {response.status}: {text[:300]}, "
+                        f"endpoint={endpoint}"
+                    )
+                    logger.error(f"persistence_node: {error_msg}")
                     build_logs.append(f"Error: {error_msg}")
                     return {"build_ready": False, "build_logs": build_logs}
 
@@ -2640,7 +2650,7 @@ async def persistence_node(
         return {"build_ready": False, "build_logs": build_logs}
 
     except Exception as e:
-        error_msg = f"Backend upload failed: {str(e)}"
+        error_msg = f"Backend upload failed: {type(e).__name__}: {e!r} (BACKEND_URL={backend_url})"
         logger.error(f"persistence_node: {error_msg}")
         build_logs.append(f"Error: {error_msg}")
         return {"build_ready": False, "build_logs": build_logs}

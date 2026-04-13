@@ -59,6 +59,13 @@ async def lifespan(app: FastAPI):
     """Pre-warm expensive singletons at startup — not per request."""
     global _redis_checkpointer, _ably_rest_client, _ably_config_warning_logged
 
+    # Log critical env vars at startup so misconfigurations are visible immediately
+    backend_url = os.getenv("BACKEND_URL", "<not set — defaults to http://localhost:8080>")
+    node_backend_url = os.getenv("NODE_BACKEND_URL", "<not set — defaults to http://localhost:8080>")
+    logger.info(f"lifespan: BACKEND_URL={backend_url}")
+    logger.info(f"lifespan: NODE_BACKEND_URL={node_backend_url}")
+    logger.info(f"lifespan: FASTAPI_WEBHOOK_SECRET={'<set>' if os.getenv('FASTAPI_WEBHOOK_SECRET') else '<NOT SET>'}")
+
     # Pre-load template files (blocking I/O done once here, not on first request)
     try:
         from agent.template_manager import get_template_manager

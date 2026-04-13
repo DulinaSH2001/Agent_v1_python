@@ -251,7 +251,8 @@ async def template_upload_node(
                         error_text = await response.text()
                         logger.error(
                             f"Backend upload failed on batch {batch_idx} "
-                            f"(status {response.status}): {error_text}"
+                            f"(status {response.status}): {error_text[:300]}, "
+                            f"endpoint={endpoint}"
                         )
                         build_logs.append(
                             f"Error: Template upload batch {batch_idx} failed "
