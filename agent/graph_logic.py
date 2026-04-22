@@ -353,6 +353,52 @@ async def plan_node(
         system_prompt += VISUAL_EDIT_INSTRUCTION.format(
             visual_context_str=visual_context_str)
 
+        # Fast path: when the visual editor stamped data-edit-id onto the clicked
+        # element (via source_tagger), we know the exact file to modify. Skip the
+        # architect LLM entirely — it would only re-derive what we already know,
+        # at ~30s cost and with nonzero "wrong file" rate.
+        source_file = vc.get("source_file")
+        if source_file and state.get("file_system", {}).get(source_file) is not None:
+            logger.info(
+                "plan_node: Visual edit fast-path — targeting %s:%s (%s) without architect LLM",
+                source_file,
+                vc.get("source_line"),
+                vc.get("component_name"),
+            )
+            desc_parts = [
+                f"Apply the visual editor changes to component "
+                f"{vc.get('component_name') or '(unknown)'} at "
+                f"{source_file}:{vc.get('source_line', '?')}."
+            ]
+            if changes_str:
+                desc_parts.append(
+                    f"Required style changes (use Tailwind classes where possible):\n{changes_str}"
+                )
+            desc_parts.append(
+                f"Selected element: <{vc.get('element_tag', 'unknown')}> "
+                f"class=\"{vc.get('element_classes', '')}\" "
+                f"text=\"{vc.get('element_text', '')}\""
+            )
+            desc_parts.append(
+                "Preserve all other code, props, state, and logic. Modify only this file."
+            )
+            fast_plan = [{
+                "id": "visual-edit-1",
+                "type": "modify",
+                "file_path": source_file,
+                "description": "\n\n".join(desc_parts),
+                "priority": 0,
+                "visual_edit_source_line": vc.get("source_line"),
+                "visual_edit_component": vc.get("component_name"),
+            }]
+            return {
+                "implementation_plan": fast_plan,
+                "iteration_count": state.get("iteration_count", 0) + 1,
+                "conversation_history": state.get("conversation_history", []),
+                "project_context": state.get("project_context", {}),
+                "retrieval_metadata": {"visual_edit_fast_path": True},
+            }
+
     # --- Load conversation memory ---
     memory = get_memory()
     org_slug = state.get("org_slug", "")

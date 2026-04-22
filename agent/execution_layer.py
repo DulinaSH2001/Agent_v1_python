@@ -104,6 +104,14 @@ Template contract guardrails:
   - FORBIDDEN: deleting, renaming, or replacing those exports with differently named constants if template components still import them.
   - If you extend `lib/data.ts`, append project-specific exports and preserve existing template exports.
 
+Visual-editor source tagging (REQUIRED for every JSX/TSX file):
+  - Add `data-edit-id="<file>:<line>:<Component>"` to the ROOT JSX element of every component function
+    (function/arrow-function component or default export). `<file>` is the file path from project root
+    (e.g. `app/page.tsx`), `<line>` is the line number of the component's first JSX tag, `<Component>`
+    is the enclosing component name.
+  - This attribute lets the visual editor map clicked DOM nodes back to source files. Do NOT skip it.
+  - Example: `<main data-edit-id="app/page.tsx:12:HomePage" className="...">`
+
 CSS import guardrail: The global CSS file lives at styles/globals.css (NOT inside app/).
   - FORBIDDEN: `import '@/app/globals.css'`, `import './globals.css'` (from any app/ file)
   - REQUIRED: Only app/layout.tsx imports CSS as `import '../styles/globals.css'` or `import '@/styles/globals.css'`. No other file should import globals.css.
@@ -2403,6 +2411,28 @@ async def code_review_node(
         reviewer = CodeReviewer()
         # auto_fix=True mutates file_system in-place with corrections
         summary = reviewer.review_file_system(file_system, auto_fix=True)
+
+        # Stamp data-edit-id attributes on component root JSX so the visual editor
+        # can map clicked DOM nodes back to source files. Runs after CodeReviewer
+        # so its auto-fixes don't strip our attributes. Idempotent — safe to re-run
+        # on already-stamped files (e.g. during modification jobs).
+        try:
+            from agent.source_tagger import stamp_file_system
+            before = dict(file_system)
+            file_system = stamp_file_system(file_system)
+            stamped_count = sum(
+                1 for p, c in file_system.items()
+                if before.get(p) != c
+            )
+            if stamped_count:
+                logger.info(
+                    f"code_review_node: source_tagger stamped {stamped_count} file(s) with data-edit-id"
+                )
+        except Exception as tag_err:
+            logger.warning(
+                f"code_review_node: source_tagger failed (non-fatal): {tag_err}"
+            )
+
         mcp_advisory = await gather_mcp_context(
             phase="code_review",
             prompt=(
