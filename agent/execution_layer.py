@@ -1461,28 +1461,23 @@ def get_generation_llm(
         temperature = 1.0
 
     if azure_endpoint and azure_key:
-        # ── Azure AI Foundry path (MaaS deployments like Kimi, gpt-5.3-chat on Foundry) ──
+        # ── Azure AI Foundry (OpenAI-compatible `/openai/v1` subpath) ───────
         if "services.ai.azure.com" in azure_endpoint:
-            try:
-                from langchain_azure_ai.chat_models import AzureAIChatCompletionsModel
+            base = azure_endpoint.rstrip("/")
+            if base.endswith("/models"):
+                base = base[: -len("/models")]
+            if not base.endswith("/openai/v1"):
+                base = f"{base}/openai/v1"
 
-                foundry_endpoint = azure_endpoint.rstrip("/")
-                if not foundry_endpoint.endswith("/models"):
-                    foundry_endpoint = f"{foundry_endpoint}/models"
-
-                logger.info(
-                    f"Using Azure AI Foundry for generation: {azure_deployment}")
-                return AzureAIChatCompletionsModel(
-                    endpoint=foundry_endpoint,
-                    credential=azure_key,
-                    model=azure_deployment,
-                    api_version=azure_version,
-                    temperature=temperature,
-                )
-            except ImportError:
-                logger.warning(
-                    "langchain-azure-ai not available — falling back to Azure OpenAI client"
-                )
+            logger.info(
+                f"Using Azure AI Foundry (OpenAI-compat) for generation: {azure_deployment} @ {base}")
+            return ChatOpenAI(
+                model=azure_deployment,
+                api_key=azure_key,
+                base_url=base,
+                temperature=temperature,
+                streaming=streaming,
+            )
 
         # ── Azure OpenAI path ────────────────────────────────────────────────
         try:

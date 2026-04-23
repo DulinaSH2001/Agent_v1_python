@@ -217,33 +217,33 @@ def get_planning_llm(
     Returns:
         Configured chat model instance.
     """
-    # ── Primary: Azure AI Foundry (Kimi via langchain-azure-ai) ───────────────
+    # ── Primary: Azure AI Foundry OpenAI-compatible endpoint ──────────────────
+    # Foundry exposes an OpenAI-compatible subpath at `/openai/v1` for chat
+    # completions. We use the standard ChatOpenAI client with a custom base_url.
     foundry_endpoint = os.getenv("AZURE_AI_FOUNDRY_ENDPOINT")
     foundry_key = os.getenv("AZURE_AI_FOUNDRY_API_KEY")
     foundry_deployment = os.getenv("AZURE_AI_FOUNDRY_DEPLOYMENT", "Kimi-K2.6-1")
-    foundry_version = os.getenv("AZURE_AI_FOUNDRY_API_VERSION", "2024-05-01-preview")
 
     # Kimi-K2.6-1 only supports temperature=1 (default)
     if "kimi" in foundry_deployment.lower():
         temperature = 1.0
 
     if foundry_endpoint and foundry_key:
-        try:
-            from langchain_azure_ai.chat_models import AzureAIChatCompletionsModel
+        # Normalize endpoint to `.../openai/v1` (the OpenAI-compatible subpath)
+        base = foundry_endpoint.rstrip("/")
+        if base.endswith("/models"):
+            base = base[: -len("/models")]
+        if not base.endswith("/openai/v1"):
+            base = f"{base}/openai/v1"
 
-            logger.info(f"Using Azure AI Foundry: {foundry_deployment}")
-            return AzureAIChatCompletionsModel(
-                endpoint=foundry_endpoint,
-                credential=foundry_key,
-                model=foundry_deployment,
-                api_version=foundry_version,
-                temperature=temperature,
-            )
-        except ImportError:
-            logger.warning(
-                "langchain-azure-ai not available — install with "
-                "`pip install langchain-azure-ai`. Falling back to Azure OpenAI."
-            )
+        logger.info(f"Using Azure AI Foundry (OpenAI-compat): {foundry_deployment} @ {base}")
+        return ChatOpenAI(
+            model=foundry_deployment,
+            api_key=foundry_key,
+            base_url=base,
+            temperature=temperature,
+            streaming=streaming,
+        )
 
     # ── Fallback: Azure OpenAI (if deployment is on an Azure OpenAI resource) ─
     azure_endpoint = os.getenv("AZURE_OPENAI_ENDPOINT")
