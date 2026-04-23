@@ -1435,21 +1435,21 @@ async def gather_mcp_context(
 def get_generation_llm(
     temperature: float = 0.2,
     streaming: bool = True,
-) -> ChatOpenAI:
+):
     """
-    Get a configured LLM instance for code generation.
+    Get a configured LLM instance for code generation (builder node).
 
-    Supports both Azure OpenAI and standard OpenAI based on environment variables.
-    Checks for Azure config first, then falls back to standard OpenAI.
+    Auto-detects endpoint type:
+      - `.services.ai.azure.com` → Azure AI Foundry (langchain-azure-ai)
+      - `.openai.azure.com` / `.cognitiveservices.azure.com` → Azure OpenAI (langchain-openai)
 
     Args:
         temperature: Sampling temperature. Slightly higher for creative code.
         streaming: Whether to enable streaming.
 
     Returns:
-        Configured ChatOpenAI or AzureChatOpenAI instance.
+        Configured chat model instance.
     """
-    # Check for Azure OpenAI configuration
     azure_endpoint = os.getenv("AZURE_OPENAI_ENDPOINT")
     azure_key = os.getenv("AZURE_OPENAI_API_KEY")
     azure_deployment = os.getenv(
@@ -1461,6 +1461,30 @@ def get_generation_llm(
         temperature = 1.0
 
     if azure_endpoint and azure_key:
+        # ── Azure AI Foundry path (MaaS deployments like Kimi, gpt-5.3-chat on Foundry) ──
+        if "services.ai.azure.com" in azure_endpoint:
+            try:
+                from langchain_azure_ai.chat_models import AzureAIChatCompletionsModel
+
+                foundry_endpoint = azure_endpoint.rstrip("/")
+                if not foundry_endpoint.endswith("/models"):
+                    foundry_endpoint = f"{foundry_endpoint}/models"
+
+                logger.info(
+                    f"Using Azure AI Foundry for generation: {azure_deployment}")
+                return AzureAIChatCompletionsModel(
+                    endpoint=foundry_endpoint,
+                    credential=azure_key,
+                    model=azure_deployment,
+                    api_version=azure_version,
+                    temperature=temperature,
+                )
+            except ImportError:
+                logger.warning(
+                    "langchain-azure-ai not available — falling back to Azure OpenAI client"
+                )
+
+        # ── Azure OpenAI path ────────────────────────────────────────────────
         try:
             from langchain_openai import AzureChatOpenAI
 
@@ -1478,7 +1502,7 @@ def get_generation_llm(
             logger.warning(
                 "AzureChatOpenAI not available, falling back to OpenAI")
 
-    # Fall back to standard OpenAI
+    # ── Fallback: standard OpenAI ─────────────────────────────────────────────
     api_key = os.getenv("OPENAI_API_KEY")
     if not api_key:
         raise ValueError(
@@ -1488,7 +1512,7 @@ def get_generation_llm(
 
     logger.info("Using standard OpenAI API for generation")
     return ChatOpenAI(
-        model="gpt-5.3-chat",
+        model="gpt-4o",
         temperature=temperature,
         streaming=streaming,
         api_key=api_key,

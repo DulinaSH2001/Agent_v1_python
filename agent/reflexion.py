@@ -80,6 +80,30 @@ def get_debugger_llm(
         temperature = 1.0
 
     if azure_endpoint and azure_key:
+        # ── Azure AI Foundry path (auto-detect from endpoint) ────────────────
+        if "services.ai.azure.com" in azure_endpoint:
+            try:
+                from langchain_azure_ai.chat_models import AzureAIChatCompletionsModel
+
+                foundry_endpoint = azure_endpoint.rstrip("/")
+                if not foundry_endpoint.endswith("/models"):
+                    foundry_endpoint = f"{foundry_endpoint}/models"
+
+                logger.info(
+                    f"Using Azure AI Foundry for debugging: {azure_deployment}")
+                return AzureAIChatCompletionsModel(
+                    endpoint=foundry_endpoint,
+                    credential=azure_key,
+                    model=azure_deployment,
+                    api_version=azure_version,
+                    temperature=temperature,
+                )
+            except ImportError:
+                logger.warning(
+                    "langchain-azure-ai not available — falling back to Azure OpenAI client"
+                )
+
+        # ── Azure OpenAI path ────────────────────────────────────────────────
         try:
             from langchain_openai import AzureChatOpenAI
 
@@ -103,7 +127,7 @@ def get_debugger_llm(
         )
 
     return ChatOpenAI(
-        model="gpt-5.3-chat",
+        model="gpt-4o",
         temperature=temperature,
         api_key=api_key,
     )

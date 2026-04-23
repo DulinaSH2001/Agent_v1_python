@@ -202,36 +202,60 @@ def enrich_plan_with_mcp_metadata(
 def get_planning_llm(
     temperature: float = 0.1,
     streaming: bool = True,
-) -> ChatOpenAI:
+):
     """
-    Get a configured LLM instance for planning.
+    Get a configured LLM instance for planning (architect node).
 
-    Supports both Azure OpenAI and standard OpenAI based on environment variables.
-    Checks for Azure config first, then falls back to standard OpenAI.
+    Uses Azure AI Foundry's MaaS endpoint (e.g. Kimi-K2.6-1) via
+    langchain-azure-ai's AzureAIChatCompletionsModel. Falls back to
+    Azure OpenAI if Foundry vars are absent, then to standard OpenAI.
 
     Args:
         temperature: Sampling temperature. Low for deterministic planning.
         streaming: Whether to enable streaming. Required for token callbacks.
 
     Returns:
-        Configured ChatOpenAI or AzureChatOpenAI instance.
+        Configured chat model instance.
     """
-    # Check for Azure OpenAI configuration
-    azure_endpoint = os.getenv("AZURE_OPENAI_ENDPOINT")
-    azure_key = os.getenv("AZURE_OPENAI_API_KEY")
-    azure_deployment = os.getenv(
-        "AZURE_OPENAI_DEPLOYMENT_NAME", "Kimi-K2.6-1")
-    azure_version = os.getenv("AZURE_OPENAI_API_VERSION", "2024-05-01-preview")
+    # ── Primary: Azure AI Foundry (Kimi via langchain-azure-ai) ───────────────
+    foundry_endpoint = os.getenv("AZURE_AI_FOUNDRY_ENDPOINT")
+    foundry_key = os.getenv("AZURE_AI_FOUNDRY_API_KEY")
+    foundry_deployment = os.getenv("AZURE_AI_FOUNDRY_DEPLOYMENT", "Kimi-K2.6-1")
+    foundry_version = os.getenv("AZURE_AI_FOUNDRY_API_VERSION", "2024-05-01-preview")
 
     # Kimi-K2.6-1 only supports temperature=1 (default)
-    if "kimi" in azure_deployment.lower():
+    if "kimi" in foundry_deployment.lower():
         temperature = 1.0
+
+    if foundry_endpoint and foundry_key:
+        try:
+            from langchain_azure_ai.chat_models import AzureAIChatCompletionsModel
+
+            logger.info(f"Using Azure AI Foundry: {foundry_deployment}")
+            return AzureAIChatCompletionsModel(
+                endpoint=foundry_endpoint,
+                credential=foundry_key,
+                model=foundry_deployment,
+                api_version=foundry_version,
+                temperature=temperature,
+            )
+        except ImportError:
+            logger.warning(
+                "langchain-azure-ai not available — install with "
+                "`pip install langchain-azure-ai`. Falling back to Azure OpenAI."
+            )
+
+    # ── Fallback: Azure OpenAI (if deployment is on an Azure OpenAI resource) ─
+    azure_endpoint = os.getenv("AZURE_OPENAI_ENDPOINT")
+    azure_key = os.getenv("AZURE_OPENAI_API_KEY")
+    azure_deployment = os.getenv("AZURE_OPENAI_DEPLOYMENT_NAME", "gpt-5.3-chat")
+    azure_version = os.getenv("AZURE_OPENAI_API_VERSION", "2024-05-01-preview")
 
     if azure_endpoint and azure_key:
         try:
             from langchain_openai import AzureChatOpenAI
 
-            logger.info(f"Using Azure OpenAI: {azure_deployment}")
+            logger.info(f"Using Azure OpenAI for planning: {azure_deployment}")
             return AzureChatOpenAI(
                 azure_endpoint=azure_endpoint,
                 api_key=azure_key,
@@ -244,17 +268,19 @@ def get_planning_llm(
             logger.warning(
                 "AzureChatOpenAI not available, falling back to OpenAI")
 
-    # Fall back to standard OpenAI
+    # ── Final fallback: standard OpenAI ───────────────────────────────────────
     api_key = os.getenv("OPENAI_API_KEY")
     if not api_key:
         raise ValueError(
-            "Neither Azure OpenAI nor OpenAI API key is configured. "
-            "Set AZURE_OPENAI_ENDPOINT + AZURE_OPENAI_API_KEY or OPENAI_API_KEY."
+            "No LLM configured. Set one of: "
+            "(1) AZURE_AI_FOUNDRY_ENDPOINT + AZURE_AI_FOUNDRY_API_KEY, "
+            "(2) AZURE_OPENAI_ENDPOINT + AZURE_OPENAI_API_KEY, or "
+            "(3) OPENAI_API_KEY."
         )
 
-    logger.info("Using standard OpenAI API")
+    logger.info("Using standard OpenAI API for planning")
     return ChatOpenAI(
-        model="Kimi-K2.6-1",
+        model="gpt-4o",
         temperature=temperature,
         streaming=streaming,
         api_key=api_key,
